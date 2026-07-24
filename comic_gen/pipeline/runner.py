@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import Callable
 
 from PIL import Image
 
 from ..core.config import Config
+from ..core.job import JobReport
 from ..core.models import (
     STATUS_DETECTED,
     STATUS_OCRED,
@@ -97,7 +99,8 @@ class Runner:
 
     # ------------------------------------------------------------ 主流程
     def run(self, input_path: str | Path, output_path: str | Path | None = None,
-            progress=None, rerender: bool = False, load_cb=None) -> Path:
+            progress=None, rerender: bool = False, load_cb=None,
+            should_cancel: Callable[[], bool] | None = None) -> JobReport:
         input_path = Path(input_path)
         work_dir = self._work_dir(input_path, output_path)
         extract_dir = work_dir / "_extract"
@@ -128,11 +131,25 @@ class Runner:
         def open_page(p: Page) -> Image.Image:
             return Image.open(page_img[p.image]).convert("RGB")
 
+        def cancelled() -> bool:
+            if should_cancel is None:
+                return False
+            try:
+                return bool(should_cancel())
+            except Exception:
+                return False
+
+        # 每个阶段间隙检查取消：当前页处理完、落盘后才退出，pages.json 始终完好。
+        # 命中取消直接返回，跳过 pack_output（不产出不完整的最终包）。
+
         # 1. 检测
         todo = [p for p in pages if p.status == STATUS_PENDING]
         if todo:
             det = self._get_detector()
             for i, p in enumerate(todo):
+                if cancelled():
+                    self.log("已停止（检测阶段）")
+                    return JobReport.cancelled(pages)
                 try:
                     p.regions = det.detect(open_page(p))
                     p.width, p.height = Image.open(page_img[p.image]).size
@@ -148,6 +165,9 @@ class Runner:
         if todo:
             ocr = self._get_ocr()
             for i, p in enumerate(todo):
+                if cancelled():
+                    self.log("已停止（OCR 阶段）")
+                    return JobReport.cancelled(pages)
                 try:
                     ocr.recognize_regions(open_page(p), p.regions)
                     p.status = STATUS_OCRED
@@ -162,6 +182,10 @@ class Runner:
         if todo:
             translator = self._get_translator()
             for i, p in enumerate(todo):
+                if cancelled():
+                    self.log("已停止（翻译阶段）")
+                    self._save_pages(work_dir, pages, input_path)
+                    return JobReport.cancelled(pages)
                 regions = [r for r in p.regions if r.source_text.strip()]
                 if regions:
                     texts = [r.source_text for r in regions]
@@ -185,6 +209,9 @@ class Runner:
 
             inpainter = self._get_inpainter()
             for i, p in enumerate(todo):
+                if cancelled():
+                    self.log("已停止（渲染阶段）")
+                    return JobReport.cancelled(pages)
                 try:
                     img = open_page(p)
                     text_regions = [r for r in p.regions if r.source_text.strip()]
@@ -201,13 +228,15 @@ class Runner:
                 self._progress(progress, "render", i + 1, len(todo))
 
         result = pack_output(loaded, trans_dir, output_path, pdf_dpi=self.cfg.pdf_dpi)
-        self.log(f"完成: {result}")
-        return result
+        report = JobReport.from_pages(pages, result)
+        self.log(f"完成: {result}（{report.summary}）")
+        return report
 
     # ------------------------------------------------------------ 重渲染（译后编辑）
     def rerender(self, input_path: str | Path, output_path: str | Path | None = None,
-                 progress=None) -> Path:
-        return self.run(input_path, output_path, progress=progress, rerender=True)
+                 progress=None, should_cancel: Callable[[], bool] | None = None) -> JobReport:
+        return self.run(input_path, output_path, progress=progress, rerender=True,
+                         should_cancel=should_cancel)
 
     # ------------------------------------------------------------ 内部
     def _work_dir(self, input_path: Path, output_path) -> Path:

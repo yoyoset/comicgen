@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-JobStatus = Literal["ok", "partial", "failed"]
+JobStatus = Literal["ok", "partial", "failed", "cancelled"]
 
 
 @dataclass
@@ -65,3 +65,14 @@ class JobReport:
 
         return cls(status=status, output_path=output_path, total_pages=total,
                     failed_pages=failures, summary=summary)
+
+    @classmethod
+    def cancelled(cls, pages: list) -> "JobReport":
+        """用户主动停止。当前页已写完、pages.json 完好，可重跑续上。"""
+        return cls(
+            status="cancelled",
+            output_path=None,
+            total_pages=len(pages),
+            failed_pages=[],
+            summary="已停止。当前进度已保存，可重新运行以继续。",
+        )
