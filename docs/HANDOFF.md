@@ -10,7 +10,7 @@
 
 - Windows 11 / Python 3.13.14（Microsoft Store 版）/ RTX 3060 12GB
 - venv：`.venv\`，Python 入口 `.\.venv\Scripts\python.exe`
-- torch 2.6.0+cu124（CUDA 可用）/ transformers 5.14.1 / gradio 6.20.0 / PyInstaller 6.21.0
+- torch 2.6.0+cu124（CUDA 可用）/ transformers 5.14.1 / PySide6 6.x / PyInstaller 6.21.0
 - 网络注意：**HuggingFace 大文件直连极慢（~1MB/s）**，hf-mirror 同样慢；小模型（检测 170MB / OCR 450MB / LaMa 200MB）已入 HF 缓存（`%USERPROFILE%\.cache\huggingface`）；Sakura 7B GGUF（4.25GB，IQ4_XS）已下载完成。
 
 ## 3. 已完成并验证（全部有实测记录）
@@ -22,8 +22,7 @@
 | 文件夹 / ZIP / EPUB 输入输出 | ✅ | EPUB 输出符合规范（mimetype 首项不压缩、图片原位替换） |
 | pages.json 断点续跑 / `--rerender` 译后重渲染 | ✅ | 改译文只重渲染，不重复调翻译 |
 | Sakura 本地引擎（CPU） | ✅ | 加载 ~10s，3 句翻译 ~10s |
-| Gradio 界面 | ✅ | `python -m comic_gen.ui.app` → http://127.0.0.1:7860 |
-| CLI | ✅ | `python -m comic_gen.cli <输入> [--translator X] [--rerender]` |
+| PySide6 界面 | ✅ | `python -m comic_gen.ui.app` → 原生窗口 |
 | EXE 打包（PyInstaller） | ✅ 启动验证 | `dist\comicgen\comicgen-ui.exe`，约 3.96GB，双击 10s 出界面 |
 
 ## 4. 未验证 / 待办（按优先级）
@@ -47,10 +46,11 @@ dist/comicgen/       EXE 产物（3.96GB，可直接分发）
 
 ## 6. 打包 EXE 踩过的坑（重打包前看）
 
-1. `safehttpx`/`groovy` 用 importlib.resources 读 `version.txt` → 必须 `collect_all`，否则启动 FileNotFoundError。
+1. `build_exe.spec` 中 `collect_all("PySide6", ...)` 与手工 `hiddenimports` 模型 → 部分包依赖动态 import。
 2. 入口不能直接用包内 `comic_gen/ui/app.py`（相对导入失败）→ 用根目录 `entry_ui.py`。
 3. 重打包命令：`.\.venv\Scripts\python.exe -m PyInstaller build_exe.spec --noconfirm --clean`（约 5 分钟）。
-4. 冻结环境模型缓存重定向逻辑在 `ui/app.py main()`（`sys.frozen` 分支）。
+4. **重打包后需手动复制模型到 `dist\comicgen\models\hf\hub\`**：`COLLECT` 会清空 `dist/comicgen`，历史模型丢失，需补回。
+5. 冻结环境模型缓存重定向逻辑在 `ui/app.py main()`（`sys.frozen` 分支）。
 
 ## 7. 历史 bug 记录（已修，回归时注意）
 
@@ -88,7 +88,7 @@ dist/comicgen/       EXE 产物（3.96GB，可直接分发）
 - mock 全链路：detect→OCR→translate(mock)→LaMa 抹字→渲染 → 2 页 rendered ✅
 - **Sakura 全链路（默认引擎）**：detect→OCR→Sakura 翻译→抹字→渲染 → 2 页 rendered，译文正确（"那时，少年还一无所知"等）✅
 
-已将检测/OCR/Sakura 三套模型内置进 `dist\comicgen\models\hf\hub`，EXE 完全离线开箱即用（不联网、不依赖全局 HF_HOME）。
+**2026-07-24 更新**：`dist\comicgen\models\hf\hub` 已被 `COLLECT --clean` 清空，当前 EXE **不具备离线能力**。后续重打包需按第 6 节手动复制模型。
 
 ### 仍待办
 - 真实漫画 + DeepSeek 实测（需素材/key）
