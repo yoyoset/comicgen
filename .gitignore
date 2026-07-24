@@ -1,0 +1,13 @@
+.venv/
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+.DS_Store
+comicgen.log
+tests/sample*/
+tests/*.txt
+models/
+.pytest_cache/
+*.log
