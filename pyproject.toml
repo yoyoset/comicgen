@@ -19,7 +19,6 @@ dependencies = [
     "manga-ocr",
     "simple-lama-inpainting",
     "huggingface_hub",
-    "openai>=1.0",
     "PySide6",
     "easyocr",
     "pymupdf",
@@ -27,8 +26,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# 本地 Sakura 翻译引擎（GGUF，走 llama.cpp；Windows CUDA 预编译轮子安装见 README）
-sakura = [
+# 本地翻译引擎（Sakura 日译中 + 通用多语言，均为 GGUF，走 llama.cpp；
+# Windows CUDA 预编译轮子安装见 README）
+local-llm = [
     "llama-cpp-python",
     "nvidia-cuda-runtime-cu12",
     "nvidia-cublas-cu12",
