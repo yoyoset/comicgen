@@ -74,6 +74,28 @@ class _Worker(QtCore.QObject):
             self.finished.emit(f"失败：{e}\n{traceback.format_exc()}")
 
 
+class _RerenderWorker(QtCore.QObject):
+    log = QtCore.Signal(str)
+    progress = QtCore.Signal(float, str)
+    finished = QtCore.Signal(object)
+
+    def __init__(self, runner, work_dir):
+        super().__init__()
+        self.runner = runner
+        self.work_dir = work_dir
+
+    @QtCore.Slot()
+    def run(self):
+        try:
+            def cb(i, total, stage):
+                self.progress.emit(i / max(1, total), f"{stage} {i}/{total}")
+            self.runner.log = lambda m: self.log.emit(str(m))
+            out = self.runner.rerender(self.work_dir, progress=cb)
+            self.finished.emit(Path(out))
+        except Exception as e:
+            self.finished.emit(f"失败：{e}\n{traceback.format_exc()}")
+
+
 class _ModelWorker(QtCore.QObject):
     log = QtCore.Signal(str)
     finished = QtCore.Signal(str)
@@ -211,9 +233,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stop_btn = QtWidgets.QPushButton("停止")
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._on_stop)
+        self.rerender_btn = QtWidgets.QPushButton("重渲染")
+        self.rerender_btn.setToolTip("编辑 pages.json 后重新渲染译文（需选择上次翻译的输出目录）")
+        self.rerender_btn.clicked.connect(self._on_rerender)
         br = QtWidgets.QHBoxLayout()
         br.addWidget(self.start_btn, 2)
         br.addWidget(self.stop_btn, 1)
+        br.addWidget(self.rerender_btn, 1)
         lay.addRow(br)
 
         self.progress_bar = QtWidgets.QProgressBar()
@@ -424,6 +450,42 @@ class MainWindow(QtWidgets.QMainWindow):
             it = QtWidgets.QListWidgetItem(QtGui.QIcon(str(p)), p.name)
             self.preview_list.addItem(it)
 
+    def _on_rerender(self):
+        """编辑 pages.json 后重新渲染译文。"""
+        out = self.output_edit.text().strip().strip('"')
+        if not out:
+            d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择翻译输出目录（包含 pages.json）")
+            if not d:
+                return
+            out = d
+        out_path = Path(out)
+        pages_file = out_path / "pages.json" if out_path.is_dir() else out_path.parent / out_path.stem / "pages.json"
+        if not pages_file.exists():
+            QtWidgets.QMessageBox.warning(self, "找不到 pages.json", f"输出目录或其上级应包含 pages.json：{pages_file}")
+            return
+        model_dir = self.model_dir_edit.text().strip() or None
+        _set_cache(model_dir or "")
+        cfg = Config(translator=self.engine_combo.currentData(),
+                     source_lang=self.lang_combo.currentData(),
+                     deepseek_api_key=self.key_edit.text().strip(),
+                     pdf_dpi=self.dpi_spin.value())
+        self._get_runner(cfg)
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.rerender_btn.setEnabled(False)
+        self.progress_bar.setValue(0)
+        self.status_lbl.setText("重渲染中…")
+        self.log_edit.clear()
+        self._thread = QtCore.QThread()
+        self._worker = _RerenderWorker(self._runner, out_path)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.log.connect(self._on_log)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished.connect(self._on_done)
+        self._worker.finished.connect(self._thread.quit)
+        self._thread.start()
+
     def _on_stop(self):
         for t in (self._thread, self._m_thread):
             if t and t.isRunning():
@@ -433,6 +495,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     t.terminate()
                     t.wait(1000)
         self.start_btn.setEnabled(True)
+        self.rerender_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.status_lbl.setText("已停止")
 
