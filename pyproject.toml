@@ -36,6 +36,10 @@ sakura = [
     "nvidia-cufft-cu12",
     "nvidia-nvjitlink-cu12",
 ]
+# 离线测试（纯函数、无模型、无网络）
+test = [
+    "pytest>=7.0",
+]
 
 [project.scripts]
 comicgen-ui = "comic_gen.ui.app:main"
