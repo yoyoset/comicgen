@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import unquote
 from xml.etree import ElementTree as ET
 
+from ..core.environment import find_unrar
 from ..core.utils import ensure_dir, is_image, list_images, natural_key
 
 
@@ -74,11 +75,10 @@ def _load_rar(p: Path, out: Path) -> LoadedInput:
         import rarfile
     except ImportError as e:
         raise ImportError("打开 RAR/CBR 需要 rarfile：pip install rarfile") from e
-    # 本机常见 WinRAR 安装位置兜底
-    for cand in (r"C:\Program Files\WinRAR\UnRAR.exe", r"C:\Program Files (x86)\WinRAR\UnRAR.exe"):
-        if Path(cand).exists():
-            rarfile.UNRAR_TOOL = cand
-            break
+    # 本机常见 WinRAR 安装位置兜底（单一来源：core.environment.UNRAR_CANDIDATES）
+    unrar = find_unrar()
+    if unrar:
+        rarfile.UNRAR_TOOL = unrar
     src = ensure_dir(out / "src")
     try:
         with rarfile.RarFile(p) as rf:
