@@ -1,10 +1,11 @@
 """环境自检页：展示 EnvReport，首次运行/随时手动核对依赖与模型状态。"""
 from __future__ import annotations
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from ...core.environment import EnvReport
 from ...core.manifest import MODEL_MANIFEST
+from ...core.model_locator import status_text
 
 
 class DiagnosticsView(QtWidgets.QWidget):
@@ -48,11 +49,16 @@ class DiagnosticsView(QtWidgets.QWidget):
         add("WinRAR / UnRAR（RAR/CBR 输入）", report.unrar_available, report.unrar_path or "")
 
         for key, spec in MODEL_MANIFEST.items():
-            cached = report.models_cached.get(key, False)
             optional = "" if spec.required else "（按需）"
-            # 显示实际命中的权重路径：用户才能看出是不是复用到了和其它项目共享的那份，
-            # 否则一个"已缓存"看不出用的到底是哪个文件
-            add(f"{spec.label}（{spec.approx_size}）{optional}", cached, report.model_paths.get(key, ""))
+            st = report.model_status.get(key)
+            label = f"{spec.label}{optional}"
+            if st is not None:
+                text, color = status_text(st)
+                item = QtWidgets.QTreeWidgetItem([label, text])
+                item.setForeground(1, QtGui.QColor(color))
+                self.tree.addTopLevelItem(item)
+            else:
+                add(label, report.models_cached.get(key, False))
 
         self.summary_lbl.setText(
             f"磁盘剩余空间：{report.disk_free_gb} GB　|　"

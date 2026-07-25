@@ -233,11 +233,25 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "提示", str(e))
 
     def _on_job_state_changed(self, state: str):
-        self.translate_view.set_running(state == STATE_RUNNING or state == "cancelling")
+        running = state == STATE_RUNNING or state == "cancelling"
+        self.translate_view.set_running(running)
+        self.settings_view.set_running(running, self._running_settings_summary())
         text = {"idle": "就绪", "running": "运行中…", "cancelling": "正在停止…"}.get(state, state)
         self.status_lbl.setText(text)
         if state == "idle":
             self.status_progress.setVisible(False)
+
+    def _running_settings_summary(self) -> str:
+        req = self._pending_request
+        if req is None:
+            return ""
+        return (
+            f"· 模型目录：{self.settings.model_dir or '（默认 HF 缓存）'}\n"
+            f"· 推理设备：{self.settings.device}\n"
+            f"· 翻译引擎：{req.engine}　源语言：{req.source_lang}\n"
+            f"· 检测阈值：{self.settings.det_threshold}\n"
+            f"· PDF DPI：{self.settings.pdf_dpi}"
+        )
 
     def _on_job_progress(self, fraction: float, desc: str):
         self.translate_view.set_progress(fraction, desc)
