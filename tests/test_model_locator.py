@@ -5,11 +5,28 @@
 """
 import os
 import time
+from pathlib import Path
 
 import pytest
 
 from comic_gen.core import model_locator
-from comic_gen.core.model_locator import clear_cache, find_local_gguf, gguf_search_roots
+from comic_gen.core.model_locator import (
+    STATUS_INCOMPLETE,
+    STATUS_MISSING,
+    STATUS_PATH_BROKEN,
+    STATUS_READY,
+    STATUS_SIZE_MISMATCH,
+    ModelStatus,
+    clear_cache,
+    find_duplicates,
+    find_local_gguf,
+    gguf_search_roots,
+    resolve_model_path,
+    resolve_status,
+    status_of,
+    status_text,
+    trash_destination,
+)
 
 
 @pytest.fixture
@@ -99,3 +116,133 @@ def test_cache_avoids_rescan(hf_root, monkeypatch):
                         lambda *a, **k: (calls.append(1), real_walk(*a, **k))[1])
     assert find_local_gguf("cached.gguf") == f
     assert calls == []
+
+
+# ==================================================================== status_of（纯函数，表驱动）
+
+def test_status_of_ready_file():
+    st = status_of(Path("x.gguf"), is_binding=False, layout="file", exists=True,
+                    size=100, expected_size=100)
+    assert st == ModelStatus(STATUS_READY, path=Path("x.gguf"), size=100, expected_size=100)
+
+
+def test_status_of_size_mismatch():
+    st = status_of(Path("x.gguf"), is_binding=False, layout="file", exists=True,
+                    size=50, expected_size=100)
+    assert st.state == STATUS_SIZE_MISMATCH
+    assert st.size == 50 and st.expected_size == 100
+
+
+def test_status_of_missing_when_no_binding():
+    st = status_of(None, is_binding=False, layout="file", exists=False)
+    assert st.state == STATUS_MISSING
+
+
+def test_status_of_path_broken_when_binding_gone():
+    """绑定过的文件消失了必须报"路径失效"，不能悄悄降级成"未安装"——那会让用户以为从没配置过。"""
+    st = status_of(Path("gone.gguf"), is_binding=True, layout="file", exists=False)
+    assert st.state == STATUS_PATH_BROKEN
+
+
+def test_status_of_dir_incomplete():
+    st = status_of(Path("d"), is_binding=False, layout="dir", exists=True,
+                    missing_members=("config.json",))
+    assert st.state == STATUS_INCOMPLETE
+    assert st.missing_members == ("config.json",)
+
+
+def test_status_of_dir_ready_when_no_missing():
+    st = status_of(Path("d"), is_binding=False, layout="dir", exists=True, missing_members=())
+    assert st.state == STATUS_READY
+
+
+def test_is_ready_property():
+    assert ModelStatus(STATUS_READY).is_ready
+    assert not ModelStatus(STATUS_MISSING).is_ready
+
+
+# ==================================================================== resolve_status（真实磁盘 I/O）
+
+def test_resolve_status_file_ready_via_search(hf_root, monkeypatch):
+    """未绑定时按 manifest 声明的文件名在搜索根里找，找到且大小吻合就是 ready。"""
+    from dataclasses import replace
+    f = hf_root / "sakura-7b-qwen2.5-v1.0-iq4xs.gguf"
+    f.write_bytes(b"x" * 10)
+    patched = dict(model_locator.MODEL_MANIFEST)
+    patched["sakura"] = replace(patched["sakura"], size_bytes=10)
+    monkeypatch.setattr(model_locator, "MODEL_MANIFEST", patched)
+    st = resolve_status("sakura", model_dir=None)
+    assert st.state == STATUS_READY
+    assert st.path == f
+
+
+def test_resolve_status_binding_overrides_search(hf_root, tmp_path):
+    """有显式绑定时必须用绑定的文件，即使搜索能找到别的同名文件也不能用那个。"""
+    (hf_root / "sakura-7b-qwen2.5-v1.0-iq4xs.gguf").write_bytes(b"wrong one")
+    bound_file = tmp_path / "my_sakura.gguf"
+    bound_file.write_bytes(b"correct")
+    st = resolve_status("sakura", bindings={"sakura": str(bound_file)})
+    assert st.path == bound_file
+
+
+def test_resolve_status_binding_path_broken_does_not_fallback(hf_root, tmp_path):
+    """绑定指向的文件不存在时必须报 path_broken，绝不能静默回落去搜别的同名文件顶替。"""
+    (hf_root / "sakura-7b-qwen2.5-v1.0-iq4xs.gguf").write_bytes(b"decoy")
+    gone = tmp_path / "gone.gguf"
+    st = resolve_status("sakura", bindings={"sakura": str(gone)})
+    assert st.state == STATUS_PATH_BROKEN
+
+
+def test_resolve_status_dir_missing(tmp_path, monkeypatch):
+    """必须隔离 Path.home()：开发机上可能真的装过 EasyOCR，不隔离会在本机测出假阳性。"""
+    monkeypatch.setattr(model_locator.Path, "home", staticmethod(lambda: tmp_path))
+    st = resolve_status("ocr_other", model_dir=str(tmp_path / "nowhere"))
+    assert st.state == STATUS_MISSING
+
+
+def test_resolve_model_path_none_when_not_ready(hf_root):
+    """必须用 hf_root（隔离了 HF_HOME/HF_HUB_CACHE）而非裸 tmp_path——
+    否则真机上 HF_HOME 指向的真实缓存会被一并搜到，把这个"未就绪"用例测成假阴性。"""
+    assert resolve_model_path("sakura", model_dir=str(hf_root)) is None
+
+
+# ==================================================================== status_text / 查重 / 回收站
+
+def test_status_text_ready_mentions_size():
+    text, color = status_text(ModelStatus(STATUS_READY, size=1024 * 1024 * 1024))
+    assert "已就绪" in text and "GB" in text
+
+
+def test_status_text_path_broken_wording():
+    text, _ = status_text(ModelStatus(STATUS_PATH_BROKEN))
+    assert "不在原位置" in text
+
+
+def test_find_duplicates_returns_all_copies(hf_root):
+    flat = hf_root / "sakura-7b-qwen2.5-v1.0-iq4xs.gguf"
+    flat.write_bytes(b"x")
+    snap = hf_root / "hub" / "models--a--b" / "snapshots" / "s1"
+    snap.mkdir(parents=True)
+    (snap / "sakura-7b-qwen2.5-v1.0-iq4xs.gguf").write_bytes(b"x")
+    dups = find_duplicates("sakura")
+    assert len(dups) == 2
+
+
+def test_trash_destination_same_volume(tmp_path):
+    """_trash 就在原文件同目录下，结构上必然同卷（改名而非跨盘复制）。"""
+    f = tmp_path / "model.gguf"
+    f.write_bytes(b"x")
+    dest = trash_destination(f)
+    assert dest.parent == tmp_path / "_trash"
+    assert dest.drive == f.drive
+
+
+def test_trash_destination_avoids_collision(tmp_path):
+    f = tmp_path / "model.gguf"
+    f.write_bytes(b"x")
+    trash = tmp_path / "_trash"
+    trash.mkdir()
+    (trash / "model.gguf").write_bytes(b"already here")
+    dest = trash_destination(f)
+    assert dest.name != "model.gguf"
+    assert not dest.exists()
