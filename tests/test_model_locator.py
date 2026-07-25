@@ -23,9 +23,11 @@ from comic_gen.core.model_locator import (
     gguf_search_roots,
     resolve_model_path,
     resolve_status,
+    scan_all_status,
     status_of,
     status_text,
     trash_destination,
+    validate_candidate,
 )
 
 
@@ -246,3 +248,59 @@ def test_trash_destination_avoids_collision(tmp_path):
     dest = trash_destination(f)
     assert dest.name != "model.gguf"
     assert not dest.exists()
+
+
+# ==================================================================== scan_all_status / validate_candidate
+
+def test_scan_all_status_covers_all_six_keys(tmp_path):
+    from comic_gen.core.manifest import MODEL_MANIFEST
+    result = scan_all_status(model_dir=str(tmp_path))
+    assert set(result) == set(MODEL_MANIFEST)
+    assert all(isinstance(v, ModelStatus) for v in result.values())
+
+
+def test_validate_candidate_accepts_correct_gguf(tmp_path, monkeypatch):
+    """不用真实模型的几 GB size_bytes——NTFS 上 truncate 到那么大会触发同步清零，实测单个用例要 20 秒。
+    换一个体积很小的假 spec 验证同一段校验逻辑。"""
+    from dataclasses import replace
+    patched = dict(model_locator.MODEL_MANIFEST)
+    patched["llm"] = replace(patched["llm"], size_bytes=8)
+    monkeypatch.setattr(model_locator, "MODEL_MANIFEST", patched)
+
+    f = tmp_path / "candidate.gguf"
+    f.write_bytes(b"GGUF" + b"\x00" * 4)
+    assert validate_candidate("llm", str(f)) is None
+
+
+def test_validate_candidate_rejects_wrong_magic(tmp_path):
+    f = tmp_path / "candidate.gguf"
+    f.write_bytes(b"NOPE" + b"\x00" * 100)
+    msg = validate_candidate("llm", str(f))
+    assert msg is not None and "文件头" in msg
+
+
+def test_validate_candidate_rejects_wrong_size():
+    """典型误操作：给 Sakura 那一行选了 Qwen3 的文件——大小对不上，必须在做任何昂贵操作前拒绝。"""
+    from comic_gen.core.manifest import MODEL_MANIFEST
+    import tempfile
+    spec = MODEL_MANIFEST["sakura"]
+    with tempfile.NamedTemporaryFile(suffix=".gguf", delete=False) as f:
+        f.write(b"GGUF" + b"\x00" * 1000)  # 远小于 spec.size_bytes
+        path = f.name
+    try:
+        msg = validate_candidate("sakura", path)
+        assert msg is not None and "大小不对" in msg
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def test_validate_candidate_dir_layout_checks_members(tmp_path):
+    d = tmp_path / "some_snapshot"
+    d.mkdir()
+    (d / "config.json").write_text("{}")
+    msg = validate_candidate("ocr_ja", str(d))
+    assert msg is not None and "不完整" in msg
+
+
+def test_validate_candidate_rejects_missing_path(tmp_path):
+    assert validate_candidate("llm", str(tmp_path / "nope.gguf")) is not None

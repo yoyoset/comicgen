@@ -277,6 +277,39 @@ def find_duplicates(key: str, *, model_dir: str | None = None) -> list[Path]:
     return uniq
 
 
+def scan_all_status(bindings: Mapping[str, str] | None = None,
+                     model_dir: str | None = None) -> dict[str, ModelStatus]:
+    """一次性算出全部 6 个模型的状态。纯文件系统操作，不碰 torch/llama_cpp，供模型管理页刷新用。"""
+    return {key: resolve_status(key, bindings=bindings, model_dir=model_dir) for key in MODEL_MANIFEST}
+
+
+def validate_candidate(key: str, path: str) -> str | None:
+    """"定位…"选中文件/目录后的廉价预检：只读文件头几个字节 + 精确大小/成员文件，不做哈希。
+
+    通过返回 None；不通过返回人话错误信息，调用方据此决定要不要真的写入绑定。
+    """
+    spec = MODEL_MANIFEST[key]
+    p = Path(path)
+    if spec.layout == LAYOUT_FILE:
+        if not p.is_file():
+            return "不是一个文件"
+        if spec.magic:
+            with open(p, "rb") as f:
+                head = f.read(len(spec.magic))
+            if head != spec.magic:
+                return f"文件内容不像是有效的{spec.label}（文件头不匹配）"
+        if spec.size_bytes and p.stat().st_size != spec.size_bytes:
+            return (f"文件大小不对（期望 {spec.size_bytes} 字节，实际 {p.stat().st_size} 字节），"
+                    f"可能选错了文件")
+        return None
+    if not p.is_dir():
+        return "不是一个目录"
+    missing = _missing_members(p, spec.member_files)
+    if missing:
+        return f"目录不完整，缺少：{', '.join(missing)}"
+    return None
+
+
 def trash_destination(p: Path) -> Path:
     """同目录下的 _trash\\ 子目录——结构上保证与原文件同卷，改名而非跨盘复制。
 
