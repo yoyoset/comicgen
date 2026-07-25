@@ -195,6 +195,26 @@ def test_resolve_status_binding_path_broken_does_not_fallback(hf_root, tmp_path)
     assert st.state == STATUS_PATH_BROKEN
 
 
+def test_lama_found_at_torch_hub_default_location(tmp_path, monkeypatch):
+    """LaMa 走 torch.hub 默认 checkpoints 目录，不在标准 HF 缓存布局里——
+    专门加了一条兜底查找，首次运行弹窗/诊断页才能认出用户已经因为别的项目下过这份权重。"""
+    from dataclasses import replace
+    patched = dict(model_locator.MODEL_MANIFEST)
+    patched["lama"] = replace(patched["lama"], size_bytes=8)
+    monkeypatch.setattr(model_locator, "MODEL_MANIFEST", patched)
+
+    hub_dir = tmp_path / "hub"
+    ckpt_dir = hub_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True)
+    f = ckpt_dir / "big-lama.pt"
+    f.write_bytes(b"PK\x03\x04\x00\x00\x00\x00")
+    monkeypatch.setattr("torch.hub.get_dir", lambda: str(hub_dir))
+
+    st = resolve_status("lama")
+    assert st.state == STATUS_READY
+    assert st.path == f
+
+
 def test_resolve_status_dir_missing(tmp_path, monkeypatch):
     """必须隔离 Path.home()：开发机上可能真的装过 EasyOCR，不隔离会在本机测出假阳性。"""
     monkeypatch.setattr(model_locator.Path, "home", staticmethod(lambda: tmp_path))

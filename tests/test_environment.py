@@ -13,10 +13,12 @@ from comic_gen.core.manifest import MODEL_MANIFEST
 
 @pytest.fixture(autouse=True)
 def isolate_env(tmp_path, monkeypatch):
-    """所有用例都不该看到真机上的 F:\\hf_cache / ~/.EasyOCR，否则会被真实磁盘状态污染。"""
+    """所有用例都不该看到真机上的 F:\\hf_cache / ~/.EasyOCR / torch hub 默认权重目录，
+    否则会被真实磁盘状态污染——这台机器上三处都真的有实测用过的模型文件。"""
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf_home_unused"))
     monkeypatch.delenv("HF_HUB_CACHE", raising=False)
     monkeypatch.setattr(model_locator.Path, "home", staticmethod(lambda: tmp_path / "fake_home"))
+    monkeypatch.setattr("torch.hub.get_dir", lambda: str(tmp_path / "fake_torch_hub"))
     model_locator.clear_cache()
     yield
     model_locator.clear_cache()

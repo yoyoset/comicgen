@@ -142,6 +142,22 @@ def _missing_members(dir_path: Path, member_files: tuple[tuple[str, ...], ...]) 
     return tuple(g[0] for g in member_files if not any(f in present for f in g))
 
 
+def _default_extra_file_locations(key: str) -> list[Path]:
+    """少数模型有众所周知但不在标准 HF 缓存布局里的默认存放位置。
+
+    目前只有 LaMa：simple_lama_inpainting 走 torch.hub 的默认 checkpoints 目录，
+    这个位置不会被 gguf_search_roots 覆盖（那是给 HF 缓存用的），
+    但用户很可能已经因为跑过别的项目而在那儿有一份，值得在首次运行/诊断页认出来。
+    """
+    if key != "lama":
+        return []
+    try:
+        from torch.hub import get_dir
+        return [Path(get_dir()) / "checkpoints" / "big-lama.pt"]
+    except Exception:
+        return [Path.home() / ".cache" / "torch" / "hub" / "checkpoints" / "big-lama.pt"]
+
+
 def _dir_size(d: Path) -> int:
     """目录内直属文件的总大小（不递归子目录——manifest 声明的 member_files 都是直属文件）。"""
     try:
@@ -200,6 +216,8 @@ def resolve_status(key: str, *, bindings: Mapping[str, str] | None = None,
             return status_of(p, is_binding=True, layout=LAYOUT_FILE, exists=exists,
                               size=size, expected_size=spec.size_bytes)
         found = find_local_gguf(spec.filename, model_dir) if spec.filename else None
+        if found is None:
+            found = next((p for p in _default_extra_file_locations(key) if p.is_file()), None)
         if found is None:
             return ModelStatus(STATUS_MISSING)
         size = found.stat().st_size
