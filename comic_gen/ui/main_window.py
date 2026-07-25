@@ -1,8 +1,6 @@
 """组合根：只负责造零件、接线、菜单/状态栏。不含业务决策——那些在 JobController/core 里。"""
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -14,6 +12,7 @@ from ..core.settings import AppSettings
 from ..pipeline.translate import engine_lang_conflict
 from .job_controller import STATE_RUNNING, JobController
 from .views.diagnostics_view import DiagnosticsView
+from .views.first_run_dialog import FirstRunDialog
 from .views.model_view import ModelView
 from .views.settings_view import SettingsView
 from .views.translate_view import TranslateView
@@ -52,7 +51,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_menu()
         self._build_status_bar()
         self._wire_signals()
-        self._apply_default_model_dir_for_frozen()
+        if not self.settings.setup_completed:
+            FirstRunDialog(self.settings, self).exec()
         self._load_settings_into_views()
         self._restore_window_geometry()
 
@@ -107,14 +107,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.job_controller.log.connect(self.translate_view.append_log)
         self.job_controller.loadProgress.connect(self._on_load_progress)
         self.job_controller.finished.connect(self._on_job_finished)
-
-    def _apply_default_model_dir_for_frozen(self):
-        # 冻结（EXE）时若用户从未设置过模型目录，默认用 exe 同级 models/hf（便携、离线）
-        if getattr(sys, "frozen", False) and not self.settings.model_dir:
-            base = os.path.dirname(sys.executable)
-            default_model = os.path.join(base, "models", "hf")
-            os.makedirs(default_model, exist_ok=True)
-            self.settings.model_dir = default_model
 
     def _load_settings_into_views(self):
         self.settings_view.load_from(self.settings)

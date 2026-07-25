@@ -306,6 +306,17 @@ def find_duplicates(key: str, *, model_dir: str | None = None) -> list[Path]:
     return uniq
 
 
+def plan_download_bytes(keys: list[str]) -> int:
+    """给定一批未就绪模型的 key，估算还需下载的字节数。
+
+    只统计有精确大小的 LAYOUT_FILE 项——LAYOUT_DIR 项（HF snapshot/EasyOCR）没有
+    manifest 里的精确总大小，只有 approx_size 这个人类可读的估计字符串，不计入总和
+    以免精确数字和估算数字混在一起造成误导。
+    """
+    return sum(MODEL_MANIFEST[k].size_bytes for k in keys
+               if k in MODEL_MANIFEST and MODEL_MANIFEST[k].layout == LAYOUT_FILE)
+
+
 def scan_all_status(bindings: Mapping[str, str] | None = None,
                      model_dir: str | None = None) -> dict[str, ModelStatus]:
     """一次性算出全部 6 个模型的状态。纯文件系统操作，不碰 torch/llama_cpp，供模型管理页刷新用。"""
