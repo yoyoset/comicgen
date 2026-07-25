@@ -23,25 +23,34 @@ python -m venv .venv
 .\.venv\Scripts\python.exe scripts\make_sample.py
 .\.venv\Scripts\python.exe scripts\make_sample_epub.py
 
-# 打包 EXE（产物 dist\comicgen\comicgen-ui.exe，约 4GB，约 5 分钟）
-# 注意：COLLECT 会清空 dist/comicgen，需重新把模型复制进 dist\comicgen\models\hf\hub
-.\.venv\Scripts\python.exe -m PyInstaller build_exe.spec --noconfirm --clean
+# 打包 EXE（产物 dist\comicgen\comicgen-ui.exe，约 5 分钟）
+# 用脚本而不是直接跑 PyInstaller：脚本只换 exe 本体 + _internal\，
+# dist\comicgen\ 下的 settings.json/日志/用户模型全程不动。
+.\scripts\build_exe.ps1
 ```
 
 ## 结构
 
 ```
 comic_gen/
-├── core/        models.py(Page/Region/状态机) config.py(Config) utils.py(自然排序等)
-├── pipeline/    loader(解包/打包) detect(RT-DETRv2) ocr(manga-ocr)
-│                translate(deepseek/sakura/mock) inpaint(LaMa+取色) render(横竖排自适应)
-│                runner(编排+pages.json断点续跑)
-└── ui/app.py    PySide6 原生界面（main() 内有 sys.frozen 分支：EXE 运行时模型缓存重定向到 exe 同级）
+├── core/        models.py(Page/Region/状态机) config.py(Config，含 model_paths 绑定)
+│                manifest.py(6 个模型的单一清册：repo/文件名/精确大小/目录成员表)
+│                model_locator.py(本地权重定位 + 四态状态机 ready/missing/path_broken/size_mismatch)
+│                settings.py(AppSettings 持久化，唯一的 Config 组装点) paths.py(便携配置路径)
+│                environment.py(能力探测 EnvReport) job.py(JobRequest/JobReport) utils.py
+├── pipeline/    loader(解包/打包) detect(RT-DETRv2) ocr(manga-ocr/EasyOCR)
+│                translate(sakura/llm/mock，全本地 GGUF) inpaint(LaMa+取色) render(横竖排自适应)
+│                runner(编排+pages.json断点续跑+JobReport+协作式取消)
+└── ui/
+    ├── main_window.py   组合根：只接线，不含业务决策
+    ├── job_controller.py 任务生命周期唯一归属（idle/running/cancelling）
+    ├── workers.py       QThread 工作对象（PipelineWorker/ModelWorker/ScanWorker）
+    └── views/           纯视图：translate/settings/model/diagnostics/first_run_dialog
 entry_ui.py      EXE 入口（绝对导入；不要直接用包内 app.py 当入口）
 build_exe.spec   PyInstaller 配置
-scripts/         自测素材生成
+scripts/         自测素材生成 + build_exe.ps1（打包脚本，就地换件不碰用户数据）
 tests/sample*    自测产物（不入库）
-dist/comicgen/   EXE 产物（不入库）
+dist/comicgen/   EXE 产物（不入库，但其中的 settings.json 是用户数据，重新打包不会动它）
 docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 ```
 
@@ -51,19 +60,21 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 2. **工作目录规则**：文件夹输入 → 输出目录即工作目录；压缩包/PDF 输入 → `<输出文件名去扩展>/` 为工作目录，`_extract/src` 为解包区（**每次 run 先清空再解包**，防止不同输入污染）。`Runner._check_output_safe` 阻止输出覆盖原图（同路径或输出在输入目录内）。
 3. **支持格式**：文件夹（**递归**子目录）、ZIP/CBZ、RAR/CBR（解压需系统 UnRAR，输出转 CBZ）、EPUB（按 OPF spine 排序，重打包保 mimetype 规范）、PDF（PyMuPDF 每页 @150dpi 渲染为图，输出合并回 PDF；可通过 Config.pdf_dpi 调整）。
 3. **模型懒加载 + UI 常驻**：Runner._get_* 懒加载；UI 用模块级单例 Runner，模型跨请求复用；翻译引擎按 `cfg.translator` name 切换重建，其余模型不重载。
-4. **默认引擎 = 本地 Sakura**（`Config.translator="sakura"`），开箱即用无需 API Key。DeepSeek 为可选，UI 选 deepseek 但缺 Key 会给出友好提示而非崩溃。Sakura 为日文专用，`source_lang != "ja"` 时引擎校验会拦截并提示改用 deepseek。
-5. **多语言分工**：`Config.source_lang`（ja/en/zh/other）决定 OCR 后端——日文 manga-ocr，英/中/其它 EasyOCR；翻译引擎推荐——日文 sakura，其它 deepseek（UI 源语言变化时联动改引擎下拉）。
+4. **全部本地翻译引擎**（`Config.translator`：`sakura`/`llm`/`mock`），不联网、不需要 API Key。Sakura 为日文专用（GGUF，轻小说风格），`source_lang != "ja"` 时 `pipeline.translate.engine_lang_conflict` 会拦截并提示改用 `llm`（通用多语言 GGUF）。
+5. **多语言分工**：`Config.source_lang`（ja/en/zh/other）决定 OCR 后端——日文 manga-ocr，英/中/其它 EasyOCR；翻译引擎推荐——日文 sakura，其它 llm（`pipeline.translate.ENGINE_RECOMMENDATION`，UI 源语言变化时联动改引擎下拉）。
+5a. **每个模型独立路径绑定**：`AppSettings.model_files`（manifest 键 → 绝对路径）经 `to_config()` 传进 `Config.model_paths`，是每次任务的不可变快照（不是进程级全局表——运行中改设置不会影响正在跑的任务）。解析顺序：显式绑定 → 本地缓存搜索（`core.model_locator`）→ 联网下载兜底。绑定失效（文件被移走）或大小不对，直接报错，绝不静默回落去联网下载新的顶替。
 6. **检测模型**用 `ogkalu/comic-text-and-bubble-detector`（Apache-2.0，规避 GPL 系工具的许可证风险）；类别 0=bubble 1=text_bubble 2=text_free，bubble 类丢弃。
 6. **取色**：未膨胀 mask + 腐蚀核心 + 中位数（膨胀 mask 会混入背景色导致译文发灰）。
 7. **描边策略**：仅浅色文字加黑描边（1px）；深色文字不描边（气泡内描边会糊）。
 8. **渲染字体多级兜底**：指定字体 → 常见系统 CJK 字体 → `ImageFont.load_default()`，绝不抛。
-9. **EXE 便携模型**：冻结时仅当 `exe同级/models/hf/hub` 非空才强制用它，否则沿用本机全局 HF_HOME。**当前 `dist/comicgen/models/` 已被 COLLECT 清空，离线能力已丧失**；重打包后需手动复制模型到 `dist\comicgen\models\hf\hub\`。
+9. **模型目录不再有冻结态特殊默认值**：冻结/开发态都用 `core.paths.detect_default_model_dir()` 探测到的 HF 缓存根，由首次运行弹窗（`ui.views.first_run_dialog`）让用户确认或改到别处。**不要**再往 `_apply_default_model_dir_for_frozen` 这类"冻结时默认用 exe 同级目录"的逻辑上加代码——那是上一版备份/还原 hack 的根因，已经删掉。重新打包用 `scripts\build_exe.ps1`（只换 exe 本体 + `_internal\`），不要直接跑裸的 PyInstaller 命令，否则 `--clean` 会清空 `dist\comicgen\` 下的 `settings.json`。
 10. **UI 输出路径**：留空=输入同级 `_translated`；可手动指定避免上传 zip 落 temp。
 11. PowerShell 控制台 GBK 显示中文日志乱码是**显示问题**，日志本身 UTF-8 正常，不要为此改代码。
 
 ## 已知待办 / 局限
 
-- 真实漫画 + DeepSeek 未实测（需素材和 key）；检测阈值/掩码膨胀参数可能需调（Config.det_threshold）。
-- Sakura（llama-cpp-python）当前为 CPU 轮子；GPU 加速需 CUDA 12.4 运行时 + abetlen cu124 轮子（见 README）。
+- 真实漫画批量测试较少；检测阈值/掩码膨胀参数可能需调（`Config.det_threshold`，已可在设置页调）。
+- llama-cpp-python 的 GPU 轮子需要匹配的 CUDA 12.4 运行时，见 README。
 - 竖排标点/数字未做体位旋转；SFX 拟声词无专项处理。
-- HuggingFace 大文件下载慢（~1MB/s），Sakura GGUF 已缓存；EXEs 分发时模型仍需首次下载。
+- 磁盘冗余（同机与 subgen 共享缓存产生的重复文件、失败下载残留）本轮只做了查重/软删除入口，未清理，
+  详见项目 memory `offline-and-model-sharing`。

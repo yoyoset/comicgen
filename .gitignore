@@ -11,3 +11,5 @@ tests/*.txt
 models/
 .pytest_cache/
 *.log
+settings.json
+settings.json.bak
