@@ -1,0 +1,304 @@
+"""组合根：只负责造零件、接线、菜单/状态栏。不含业务决策——那些在 JobController/core 里。"""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+from PySide6 import QtCore, QtGui, QtWidgets
+
+from ..core.environment import apply_model_dir, detect_environment
+from ..core.job import JobReport, JobRequest, read_original_input, resolve_pages_json
+from ..core.settings import AppSettings
+from ..pipeline.translate import engine_lang_conflict
+from .job_controller import STATE_RUNNING, JobController
+from .views.diagnostics_view import DiagnosticsView
+from .views.model_view import ModelView
+from .views.settings_view import SettingsView
+from .views.translate_view import TranslateView
+from .workers import ModelWorker
+
+
+class MainWindow(QtWidgets.QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("comic-gen 漫画自动翻译")
+        self.resize(1100, 760)
+
+        self.settings = AppSettings.load()
+        self._last_completed_request: JobRequest | None = None
+        self._last_completed_output_path: Path | None = None  # JobReport.output_path，见 _on_rerender 注释
+        self._pending_request: JobRequest | None = None  # 当前提交给 controller 的请求，finished 时用于记录
+        self._m_thread: QtCore.QThread | None = None
+        self._m_worker: ModelWorker | None = None
+
+        self.translate_view = TranslateView()
+        self.settings_view = SettingsView()
+        self.model_view = ModelView()
+        self.diagnostics_view = DiagnosticsView()
+
+        tabs = QtWidgets.QTabWidget()
+        tabs.addTab(self.translate_view, "翻译")
+        tabs.addTab(self.settings_view, "设置")
+        tabs.addTab(self.model_view, "模型管理")
+        tabs.addTab(self.diagnostics_view, "环境自检")
+        self.setCentralWidget(tabs)
+
+        self.job_controller = JobController()
+
+        self._build_menu()
+        self._build_status_bar()
+        self._wire_signals()
+        self._apply_default_model_dir_for_frozen()
+        self._load_settings_into_views()
+        self._restore_window_geometry()
+
+        QtCore.QTimer.singleShot(50, self._run_diagnostics)
+
+    # ------------------------------------------------------------ 搭建
+    def _build_menu(self):
+        m_file = self.menuBar().addMenu("文件(&F)")
+        act_open = m_file.addAction("打开输入…")
+        act_open.triggered.connect(self._menu_open_input)
+        m_file.addSeparator()
+        act_quit = m_file.addAction("退出")
+        act_quit.triggered.connect(self.close)
+
+        m_view = self.menuBar().addMenu("查看(&V)")
+        act_settings = m_view.addAction("设置")
+        act_settings.triggered.connect(lambda: self.centralWidget().setCurrentWidget(self.settings_view))
+        act_diag = m_view.addAction("环境自检")
+        act_diag.triggered.connect(lambda: self.centralWidget().setCurrentWidget(self.diagnostics_view))
+
+        m_help = self.menuBar().addMenu("帮助(&H)")
+        act_about = m_help.addAction("关于")
+        act_about.triggered.connect(self._show_about)
+
+    def _build_status_bar(self):
+        bar = self.statusBar()
+        self.status_lbl = QtWidgets.QLabel("就绪")
+        bar.addWidget(self.status_lbl, 1)
+        self.status_progress = QtWidgets.QProgressBar()
+        self.status_progress.setMaximumWidth(220)
+        self.status_progress.setVisible(False)
+        bar.addPermanentWidget(self.status_progress)
+
+    def _wire_signals(self):
+        self.translate_view.startRequested.connect(self._on_start)
+        self.translate_view.stopRequested.connect(self.job_controller.cancel)
+        self.translate_view.rerenderRequested.connect(self._on_rerender)
+
+        self.settings_view.changed.connect(self._on_settings_changed)
+
+        self.model_view.checkRequested.connect(lambda d, s, l: self._start_model_worker(d, s, l, False))
+        self.model_view.downloadRequested.connect(lambda d, s, l: self._start_model_worker(d, s, l, True))
+
+        self.diagnostics_view.recheckRequested.connect(self._run_diagnostics)
+
+        self.job_controller.stateChanged.connect(self._on_job_state_changed)
+        self.job_controller.progress.connect(self._on_job_progress)
+        self.job_controller.log.connect(self.translate_view.append_log)
+        self.job_controller.loadProgress.connect(self._on_load_progress)
+        self.job_controller.finished.connect(self._on_job_finished)
+
+    def _apply_default_model_dir_for_frozen(self):
+        # 冻结（EXE）时若用户从未设置过模型目录，默认用 exe 同级 models/hf（便携、离线）
+        if getattr(sys, "frozen", False) and not self.settings.model_dir:
+            base = os.path.dirname(sys.executable)
+            default_model = os.path.join(base, "models", "hf")
+            os.makedirs(default_model, exist_ok=True)
+            self.settings.model_dir = default_model
+
+    def _load_settings_into_views(self):
+        self.settings_view.load_from(self.settings)
+        self.model_view.set_default_dir(self.settings.model_dir)
+        self.translate_view.set_last_browse_dir(self.settings.last_input_dir)
+        apply_model_dir(self.settings.model_dir)
+
+    def _restore_window_geometry(self):
+        if self.settings.window_geometry_hex:
+            try:
+                self.restoreGeometry(QtCore.QByteArray.fromHex(self.settings.window_geometry_hex.encode()))
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------ 菜单动作
+    def _menu_open_input(self):
+        d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择输入文件夹", self.translate_view.default_dir())
+        if d:
+            self.translate_view.input_edit.setText(d)
+            self.centralWidget().setCurrentWidget(self.translate_view)
+
+    def _show_about(self):
+        QtWidgets.QMessageBox.about(
+            self, "关于 comic-gen",
+            "comic-gen 漫画自动翻译\n\n"
+            "检测 RT-DETRv2 · OCR manga-ocr/EasyOCR · 抹字 LaMa · 翻译 Sakura/通用本地 LLM\n"
+            "全部本地推理，无需联网 API。",
+        )
+
+    # ------------------------------------------------------------ 设置
+    def _on_settings_changed(self):
+        self.settings_view.apply_to(self.settings)
+        self.settings.save()
+        self.model_view.set_default_dir(self.settings.model_dir)
+        apply_model_dir(self.settings.model_dir)
+
+    # ------------------------------------------------------------ 翻译
+    def _on_start(self):
+        if self.job_controller.is_busy():
+            return
+        request = self.translate_view.build_request()
+        if not request.input_path:
+            QtWidgets.QMessageBox.warning(self, "提示", "请先选择输入")
+            return
+        conflict = engine_lang_conflict(request.engine, request.source_lang)
+        if conflict:
+            QtWidgets.QMessageBox.warning(self, "引擎不匹配", conflict)
+            return
+
+        apply_model_dir(self.settings.model_dir)
+        cfg = self.settings.to_config(request)
+
+        self.settings.last_input_dir = str(Path(request.input_path).parent)
+        if request.output_path:
+            self.settings.last_output_dir = str(Path(request.output_path).parent)
+        self.settings.save()
+
+        self.translate_view.clear_log()
+        self.status_progress.setVisible(True)
+        self.status_progress.setValue(0)
+        try:
+            self._pending_request = request
+            self.job_controller.start(request, cfg)
+        except RuntimeError as e:
+            QtWidgets.QMessageBox.warning(self, "提示", str(e))
+
+    def _on_rerender(self):
+        if self.job_controller.is_busy():
+            return
+
+        if self._last_completed_request is not None and self._last_completed_output_path is not None and \
+                resolve_pages_json(self._last_completed_output_path).exists():
+            # 快路径：本会话内刚跑完一个任务，直接复用同一对 (input, 已解析的最终 output)——
+            # 用已解析路径而非原始 request.output_path（后者可能是 None），
+            # 保证 work_dir 与最终输出位置都与原来完全一致（见 runner.run 的 work_dir_override 说明：
+            # 重渲染不能凭输出目录反推原始输入，必须传回同一对 input/output）。
+            base = self._last_completed_request
+            request = JobRequest(
+                input_path=base.input_path, output_path=str(self._last_completed_output_path),
+                source_lang=base.source_lang, engine=base.engine, direction=base.direction,
+                is_rerender=True,
+            )
+        else:
+            d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择翻译工作目录（包含 pages.json）", self.translate_view.default_dir())
+            if not d:
+                return
+            pages_file = resolve_pages_json(d)
+            if not pages_file.exists():
+                QtWidgets.QMessageBox.warning(self, "找不到 pages.json", f"该目录不像是有效的翻译工作目录：{pages_file}")
+                return
+            original_input = read_original_input(pages_file)
+            if not original_input:
+                QtWidgets.QMessageBox.warning(self, "无法定位原始输入", "pages.json 中缺少原始输入记录，无法重渲染。")
+                return
+            QtWidgets.QMessageBox.information(
+                self, "跨会话重渲染",
+                "已从 pages.json 恢复原始输入路径。\n最终产物将打包到默认位置"
+                "（<原始输入名>_translated），而非本次浏览的目录，请留意日志中的完成路径。",
+            )
+            request = JobRequest(
+                input_path=original_input, output_path=None,
+                source_lang=self.translate_view.lang_combo.currentData(),
+                engine=self.translate_view.engine_combo.currentData(),
+                direction=self.translate_view.dir_combo.currentData(),
+                is_rerender=True, work_dir_override=d,
+            )
+
+        conflict = engine_lang_conflict(request.engine, request.source_lang)
+        if conflict:
+            QtWidgets.QMessageBox.warning(self, "引擎不匹配", conflict)
+            return
+
+        apply_model_dir(self.settings.model_dir)
+        cfg = self.settings.to_config(request)
+        self.translate_view.clear_log()
+        self.status_progress.setVisible(True)
+        self.status_progress.setValue(0)
+        try:
+            self._pending_request = request
+            self.job_controller.start(request, cfg)
+        except RuntimeError as e:
+            QtWidgets.QMessageBox.warning(self, "提示", str(e))
+
+    def _on_job_state_changed(self, state: str):
+        self.translate_view.set_running(state == STATE_RUNNING or state == "cancelling")
+        text = {"idle": "就绪", "running": "运行中…", "cancelling": "正在停止…"}.get(state, state)
+        self.status_lbl.setText(text)
+        if state == "idle":
+            self.status_progress.setVisible(False)
+
+    def _on_job_progress(self, fraction: float, desc: str):
+        self.translate_view.set_progress(fraction, desc)
+        self.status_progress.setValue(int(fraction * 100))
+        self.status_lbl.setText(desc)
+
+    def _on_load_progress(self, i: int, n: int):
+        self.status_lbl.setText(f"读取文档 {i}/{n} 页")
+
+    def _on_job_finished(self, result):
+        # 记录刚提交的请求（若成功/部分成功），供"重渲染"快路径复用；必须用当初实际提交的
+        # request（可能来自 rerender 的跨会话回退分支，其 input_path 与 translate_view 当前
+        # 字段无关），不能重新从视图字段派生——否则会记错。
+        request_used = self._pending_request
+        self._pending_request = None
+
+        if isinstance(result, JobReport):
+            self.translate_view.show_result(result)
+            if result.status == "ok":
+                if request_used:
+                    self._last_completed_request = request_used
+                    self._last_completed_output_path = result.output_path
+                QtWidgets.QMessageBox.information(self, "完成", result.summary)
+            elif result.status == "partial":
+                if request_used:
+                    self._last_completed_request = request_used
+                    self._last_completed_output_path = result.output_path
+                detail = "\n".join(f"· {f.image}：{f.message}" for f in result.failed_pages[:20])
+                QtWidgets.QMessageBox.warning(self, "部分完成", f"{result.summary}\n\n{detail}")
+            elif result.status == "cancelled":
+                self.status_lbl.setText("已停止")
+            else:  # failed
+                detail = "\n".join(f"· {f.image}：{f.message}" for f in result.failed_pages[:20])
+                QtWidgets.QMessageBox.critical(self, "失败", f"{result.summary}\n\n{detail}")
+        else:
+            QtWidgets.QMessageBox.critical(self, "失败", str(result))
+
+    # ------------------------------------------------------------ 模型管理
+    def _start_model_worker(self, model_dir: str, want_sakura: bool, want_llm: bool, do_download: bool):
+        d = model_dir or self.settings.model_dir
+        self.model_view.set_busy(True)
+        self._m_thread = QtCore.QThread()
+        self._m_worker = ModelWorker(d, want_sakura, want_llm, do_download)
+        self._m_worker.moveToThread(self._m_thread)
+        self._m_thread.started.connect(self._m_worker.run)
+        self._m_worker.finished.connect(self._on_model_done)
+        self._m_worker.finished.connect(self._m_thread.quit)
+        self._m_thread.start()
+
+    def _on_model_done(self, text: str):
+        self.model_view.show_status(text)
+        self.model_view.set_busy(False)
+        self._run_diagnostics()
+
+    # ------------------------------------------------------------ 环境自检
+    def _run_diagnostics(self):
+        report = detect_environment(model_dir=self.settings.model_dir)
+        self.diagnostics_view.show_report(report)
+
+    # ------------------------------------------------------------ 关闭
+    def closeEvent(self, event: QtGui.QCloseEvent):
+        self.job_controller.shutdown()
+        self.settings.window_geometry_hex = bytes(self.saveGeometry().toHex()).decode()
+        self.settings.save()
+        super().closeEvent(event)
