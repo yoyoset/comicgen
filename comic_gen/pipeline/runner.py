@@ -85,7 +85,8 @@ class Runner:
         """本次任务要用的模型都在本地时切离线，免得网络不通时白等 HF 的 etag 重试。"""
         from ..core.environment import enable_offline_mode, is_model_cached
 
-        missing = [k for k in self._needed_model_keys() if not is_model_cached(k)]
+        missing = [k for k in self._needed_model_keys()
+                   if not is_model_cached(k, bindings=self.cfg.model_paths)]
         if missing:
             self.log(f"以下模型尚未就位，需要联网获取: {'、'.join(missing)}")
             return

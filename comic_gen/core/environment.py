@@ -9,10 +9,12 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Mapping
 
 from .manifest import MODEL_MANIFEST
+from .model_locator import ModelStatus
 from .model_locator import clear_cache as _clear_locator_cache
-from .model_locator import find_local_gguf
+from .model_locator import resolve_status
 
 
 def apply_model_dir(model_dir: str | None) -> None:
@@ -58,7 +60,8 @@ class EnvReport:
     llama_cpp_available: bool = False
     unrar_path: str | None = None
     models_cached: dict[str, bool] = field(default_factory=dict)  # manifest key -> 是否已缓存
-    model_paths: dict[str, str] = field(default_factory=dict)  # manifest key -> 实际命中路径（仅 GGUF）
+    model_paths: dict[str, str] = field(default_factory=dict)  # manifest key -> 实际命中路径
+    model_status: dict[str, ModelStatus] = field(default_factory=dict)  # manifest key -> 四态状态
     disk_free_gb: float = 0.0
     warnings: list[str] = field(default_factory=list)
 
@@ -93,44 +96,29 @@ def enable_offline_mode() -> None:
             pass
 
 
-def find_model_path(key: str, model_dir: str | None = None) -> str | None:
-    """返回某个模型实际命中的本地路径（GGUF 才有确切文件路径），未命中返回 None。
+def find_model_path(key: str, model_dir: str | None = None,
+                     bindings: Mapping[str, str] | None = None) -> str | None:
+    """返回某个模型实际命中的本地路径，未就绪返回 None。
 
     诊断页用它把"复用到哪份权重"显示给用户——否则"已缓存"三个字看不出用的是哪一份。
     """
-    spec = MODEL_MANIFEST[key]
-    if spec.kind != "llm_gguf" or not spec.filename:
-        return None
-    hit = find_local_gguf(spec.filename, model_dir)
-    return str(hit) if hit else None
+    st = resolve_status(key, bindings=bindings, model_dir=model_dir)
+    return str(st.path) if st.is_ready and st.path else None
 
 
-def is_model_cached(key: str) -> bool:
-    """检测 MODEL_MANIFEST 里某个模型是否已本地就位。UI 模型管理页复用此函数，避免自行重复实现检查逻辑。"""
-    spec = MODEL_MANIFEST[key]
-    if spec.kind == "llm_gguf":
-        # GGUF 不能只查 HF 快照：同机 subgen 把权重平铺在 HF_HOME 根下，
-        # snapshot_download 看不见，会误报"未下载"并触发重复下载。
-        if spec.filename and find_local_gguf(spec.filename):
-            return True
-    if spec.kind == "inpaint":
-        # LaMa 走 simple_lama_inpainting 内置下载（非 HF repo），只能探测包是否可导入
-        try:
-            import simple_lama_inpainting  # noqa: F401
-            return True
-        except Exception:
-            return False
-    if not spec.repo:
-        return False
-    try:
-        from huggingface_hub import snapshot_download
-        snapshot_download(spec.repo, local_files_only=True)
-        return True
-    except Exception:
-        return False
+def is_model_cached(key: str, model_dir: str | None = None,
+                     bindings: Mapping[str, str] | None = None) -> bool:
+    """检测 MODEL_MANIFEST 里某个模型是否已本地就位。UI 模型管理页复用此函数，避免自行重复实现检查逻辑。
+
+    改走 resolve_status 后修掉两个实测到的真问题：
+    (1) 原先只要 `import simple_lama_inpainting` 成功就报 LaMa"已就绪"，权重根本没下也报绿；
+    (2) 原先完全忽略 model_dir 参数，同一份报告里 find_model_path 却用了它，两者会给出矛盾答案。
+    """
+    return resolve_status(key, bindings=bindings, model_dir=model_dir).is_ready
 
 
-def detect_environment(model_dir: str | None = None, check_models: bool = True) -> EnvReport:
+def detect_environment(model_dir: str | None = None, check_models: bool = True,
+                        bindings: Mapping[str, str] | None = None) -> EnvReport:
     report = EnvReport()
 
     try:
@@ -149,10 +137,11 @@ def detect_environment(model_dir: str | None = None, check_models: bool = True) 
 
     if check_models:
         for key in MODEL_MANIFEST:
-            report.models_cached[key] = is_model_cached(key)
-            path = find_model_path(key, model_dir)
-            if path:
-                report.model_paths[key] = path
+            st = resolve_status(key, bindings=bindings, model_dir=model_dir)
+            report.model_status[key] = st
+            report.models_cached[key] = st.is_ready
+            if st.path:
+                report.model_paths[key] = str(st.path)
 
     check_dir = Path(model_dir) if model_dir else Path.home()
     try:
