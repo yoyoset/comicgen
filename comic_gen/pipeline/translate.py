@@ -6,11 +6,10 @@ from __future__ import annotations
 
 import re
 import sys
-from pathlib import Path
 
 from ..core.config import Config
 from ..core.manifest import MODEL_MANIFEST
-from ..core.model_locator import find_local_gguf
+from ..core.model_locator import STATUS_PATH_BROKEN, STATUS_SIZE_MISMATCH, resolve_status
 
 _LANG_NAMES = {"ja": "日文", "en": "英文", "zh": "中文", "other": "原文语言"}
 
@@ -61,7 +60,9 @@ class BaseTranslator:
 class _LlamaGGUFTranslator(BaseTranslator):
     """本地 GGUF（llama.cpp）翻译引擎基类：加载 + 调用逻辑复用。
 
-    子类需设置 repo/filename 来源（见 _resolve_model）与 system_prompt、采样参数。
+    子类的 name 必须与 core.manifest.MODEL_MANIFEST 的键一致——_resolve_model_path
+    用它去查 manifest 拿 repo/filename，也用它去 cfg.model_paths 里查显式绑定。
+    子类另需设置 system_prompt、采样参数。
     """
 
     system_prompt: str = ""
@@ -88,31 +89,36 @@ class _LlamaGGUFTranslator(BaseTranslator):
         self.cfg = cfg
 
     def _resolve_model_path(self, cfg: Config) -> str:
-        """本地优先：盘上有就直接用，绝不因为联网失败而崩在已经下好的模型上。
+        """走 core.model_locator 的四态状态机：显式绑定 → 本地搜索 → 联网下载兜底。
 
         原先无条件走 list_repo_files() 联网列目录挑量化，网络一抖就整个任务失败
         （实测 SSL UNEXPECTED_EOF，权重当时其实就躺在 F:\\hf_cache 里）。
+        绑定失效（文件被移走）或大小不对（下载不完整）时必须直接报错，不能悄悄
+        回落去联网下载一份新的——那会让用户设置里的绑定形同虚设。
         """
-        repo, filename = self._model_source(cfg)
+        spec = MODEL_MANIFEST[self.name]
+        st = resolve_status(self.name, bindings=cfg.model_paths)
+        if st.is_ready:
+            print(f"[翻译模型] 使用：{st.path}", file=sys.stderr)
+            return str(st.path)
+        if st.state == STATUS_PATH_BROKEN:
+            raise RuntimeError(
+                f"设置里绑定的{spec.label}文件已找不到：{st.path}\n"
+                f"请到「模型管理」页重新定位，或清除这条绑定。"
+            )
+        if st.state == STATUS_SIZE_MISMATCH:
+            raise RuntimeError(
+                f"{spec.label}文件大小异常（期望 {st.expected_size} 字节，实际 {st.size} 字节），"
+                f"可能下载不完整。请到「模型管理」页重新下载。"
+            )
 
-        # 1. 用户在设置里直接指定了本地 .gguf 绝对路径
-        if filename and Path(filename).exists():
-            return filename
-
-        # 2. 按文件名在本地各缓存根搜索（含 subgen 平铺的那份），全程离线
-        name = Path(filename).name if filename else MODEL_MANIFEST[self.name].filename
-        if name:
-            hit = find_local_gguf(name)
-            if hit:
-                print(f"[翻译模型] 复用本地权重：{hit}", file=sys.stderr)
-                return str(hit)
-
-        # 3. 兜底：联网下载
+        # 未绑定、本地也没搜到：兜底联网下载
         from huggingface_hub import hf_hub_download, list_repo_files
 
+        name = spec.filename
         try:
             if not name:
-                files = [f for f in list_repo_files(repo) if f.lower().endswith(".gguf")]
+                files = [f for f in list_repo_files(spec.repo) if f.lower().endswith(".gguf")]
                 for pref in ("q4_k_m", "iq4_xs", "iq4xs", "q5_k_m", "q6_k", "q6k", "q8_0", "q8"):
                     cands = [f for f in files if pref in f.lower()]
                     if cands:
@@ -120,16 +126,13 @@ class _LlamaGGUFTranslator(BaseTranslator):
                         break
                 else:
                     name = files[0]
-            print(f"[翻译模型] 本地未找到 {name}，从 {repo} 下载…", file=sys.stderr)
-            return hf_hub_download(repo, name)
+            print(f"[翻译模型] 本地未找到 {name}，从 {spec.repo} 下载…", file=sys.stderr)
+            return hf_hub_download(spec.repo, name)
         except Exception as e:
             raise RuntimeError(
-                f"本地未找到翻译模型 {name or repo}，联网下载也失败：{e}\n"
-                f"可在设置页把「模型目录」指向已有权重所在目录，或直接填写 .gguf 的完整路径。"
+                f"本地未找到{spec.label}（{name or spec.repo}），联网下载也失败：{e}\n"
+                f"可在「模型管理」页把「模型目录」指向已有权重所在目录，或直接指定文件路径。"
             ) from e
-
-    def _model_source(self, cfg: Config) -> tuple[str, str]:
-        raise NotImplementedError
 
     def _call(self, prompt: str) -> str:
         resp = self.llm.create_chat_completion(
@@ -160,9 +163,6 @@ class SakuraTranslator(_LlamaGGUFTranslator):
             raise ValueError("Sakura 为日文专用模型，源语言非日文请改用通用本地引擎（llm）")
         super().__init__(cfg)
 
-    def _model_source(self, cfg: Config) -> tuple[str, str]:
-        return cfg.sakura_repo, cfg.sakura_filename
-
 
 class GeneralLLMTranslator(_LlamaGGUFTranslator):
     """本地通用 LLM：多语言（日/英/中/其它）漫画翻译，非日文场景的默认引擎。"""
@@ -174,9 +174,6 @@ class GeneralLLMTranslator(_LlamaGGUFTranslator):
         src = _LANG_NAMES.get(cfg.source_lang, "原文语言")
         self.system_prompt = _LLM_SYS_TMPL.format(src=src, dst=cfg.target_lang)
         super().__init__(cfg)
-
-    def _model_source(self, cfg: Config) -> tuple[str, str]:
-        return cfg.llm_repo, cfg.llm_filename
 
 
 class MockTranslator(BaseTranslator):
