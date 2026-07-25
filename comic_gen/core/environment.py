@@ -5,11 +5,37 @@ Qt-free，供 UI 首次运行自检与设置页"检查环境"按钮复用，也�
 """
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .manifest import MODEL_MANIFEST
+from .model_locator import clear_cache as _clear_locator_cache
+from .model_locator import find_local_gguf
+
+
+def apply_model_dir(model_dir: str | None) -> None:
+    """把 HuggingFace 缓存重定向到指定目录（留空则不改动，沿用全局默认）。
+
+    影响 huggingface_hub 后续所有 from_pretrained/hf_hub_download/snapshot_download 调用，
+    需在加载任何模型前调用。
+    """
+    base = (model_dir or "").strip().strip('"') or None
+    if not base:
+        return
+    _clear_locator_cache()  # 搜索根变了，之前缓存的命中结果作废
+    Path(base).mkdir(parents=True, exist_ok=True)
+    hub = str(Path(base) / "hub")
+    os.environ["HF_HOME"] = base
+    os.environ["HF_HUB_CACHE"] = hub
+    try:
+        import huggingface_hub.constants as hc
+        hc.HF_HUB_CACHE = hub
+        if hasattr(hc, "HF_HOME"):
+            hc.HF_HOME = base
+    except Exception:
+        pass
 
 # 本机常见 WinRAR/UnRAR 安装位置（RAR/CBR 输入需要）。
 # 单一来源：pipeline.loader 的 RAR 解包逻辑复用这里，避免两处路径列表漂移。
@@ -32,6 +58,7 @@ class EnvReport:
     llama_cpp_available: bool = False
     unrar_path: str | None = None
     models_cached: dict[str, bool] = field(default_factory=dict)  # manifest key -> 是否已缓存
+    model_paths: dict[str, str] = field(default_factory=dict)  # manifest key -> 实际命中路径（仅 GGUF）
     disk_free_gb: float = 0.0
     warnings: list[str] = field(default_factory=list)
 
@@ -46,8 +73,46 @@ class EnvReport:
         return all(self.models_cached.get(k, False) for k in required)
 
 
-def _check_model_cached(key: str) -> bool:
+def enable_offline_mode() -> None:
+    """所需模型都已在本地时，关掉 HuggingFace 的联网校验。
+
+    为什么需要：即使权重已经下好，from_pretrained 每次仍会 HEAD 一次远端核对 etag。
+    网络不通时它按退避策略重试 5 次——实测 manga-ocr 卡了 72 秒才继续
+    （见 dist/comicgen/comicgen.log 15:06:59→15:08:11），开了这个开关后是 1.1 秒。
+    只在模型齐备时调用，否则首次下载会被这个开关挡住。
+    """
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    # 环境变量在这两个库里都是 import 期读进常量的，运行时改必须连常量一起改
+    for mod, attr in (("huggingface_hub.constants", "HF_HUB_OFFLINE"),
+                      ("transformers.utils.hub", "_is_offline_mode")):
+        try:
+            import importlib
+            setattr(importlib.import_module(mod), attr, True)
+        except Exception:
+            pass
+
+
+def find_model_path(key: str, model_dir: str | None = None) -> str | None:
+    """返回某个模型实际命中的本地路径（GGUF 才有确切文件路径），未命中返回 None。
+
+    诊断页用它把"复用到哪份权重"显示给用户——否则"已缓存"三个字看不出用的是哪一份。
+    """
     spec = MODEL_MANIFEST[key]
+    if spec.kind != "llm_gguf" or not spec.filename:
+        return None
+    hit = find_local_gguf(spec.filename, model_dir)
+    return str(hit) if hit else None
+
+
+def is_model_cached(key: str) -> bool:
+    """检测 MODEL_MANIFEST 里某个模型是否已本地就位。UI 模型管理页复用此函数，避免自行重复实现检查逻辑。"""
+    spec = MODEL_MANIFEST[key]
+    if spec.kind == "llm_gguf":
+        # GGUF 不能只查 HF 快照：同机 subgen 把权重平铺在 HF_HOME 根下，
+        # snapshot_download 看不见，会误报"未下载"并触发重复下载。
+        if spec.filename and find_local_gguf(spec.filename):
+            return True
     if spec.kind == "inpaint":
         # LaMa 走 simple_lama_inpainting 内置下载（非 HF repo），只能探测包是否可导入
         try:
@@ -84,7 +149,10 @@ def detect_environment(model_dir: str | None = None, check_models: bool = True) 
 
     if check_models:
         for key in MODEL_MANIFEST:
-            report.models_cached[key] = _check_model_cached(key)
+            report.models_cached[key] = is_model_cached(key)
+            path = find_model_path(key, model_dir)
+            if path:
+                report.model_paths[key] = path
 
     check_dir = Path(model_dir) if model_dir else Path.home()
     try:

@@ -5,9 +5,12 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 from ..core.config import Config
+from ..core.manifest import MODEL_MANIFEST
+from ..core.model_locator import find_local_gguf
 
 _LANG_NAMES = {"ja": "日文", "en": "英文", "zh": "中文", "other": "原文语言"}
 
@@ -85,21 +88,45 @@ class _LlamaGGUFTranslator(BaseTranslator):
         self.cfg = cfg
 
     def _resolve_model_path(self, cfg: Config) -> str:
+        """本地优先：盘上有就直接用，绝不因为联网失败而崩在已经下好的模型上。
+
+        原先无条件走 list_repo_files() 联网列目录挑量化，网络一抖就整个任务失败
+        （实测 SSL UNEXPECTED_EOF，权重当时其实就躺在 F:\\hf_cache 里）。
+        """
+        repo, filename = self._model_source(cfg)
+
+        # 1. 用户在设置里直接指定了本地 .gguf 绝对路径
+        if filename and Path(filename).exists():
+            return filename
+
+        # 2. 按文件名在本地各缓存根搜索（含 subgen 平铺的那份），全程离线
+        name = Path(filename).name if filename else MODEL_MANIFEST[self.name].filename
+        if name:
+            hit = find_local_gguf(name)
+            if hit:
+                print(f"[翻译模型] 复用本地权重：{hit}", file=sys.stderr)
+                return str(hit)
+
+        # 3. 兜底：联网下载
         from huggingface_hub import hf_hub_download, list_repo_files
 
-        repo, filename = self._model_source(cfg)
-        if filename and Path(filename).exists():
-            return filename  # 本地 .gguf 路径（用户可自行下载指定）
-        if not filename:
-            files = [f for f in list_repo_files(repo) if f.lower().endswith(".gguf")]
-            for pref in ("q4_k_m", "iq4_xs", "iq4xs", "q5_k_m", "q6_k", "q6k", "q8_0", "q8"):
-                cands = [f for f in files if pref in f.lower()]
-                if cands:
-                    filename = cands[0]
-                    break
-            else:
-                filename = files[0]
-        return hf_hub_download(repo, filename)
+        try:
+            if not name:
+                files = [f for f in list_repo_files(repo) if f.lower().endswith(".gguf")]
+                for pref in ("q4_k_m", "iq4_xs", "iq4xs", "q5_k_m", "q6_k", "q6k", "q8_0", "q8"):
+                    cands = [f for f in files if pref in f.lower()]
+                    if cands:
+                        name = cands[0]
+                        break
+                else:
+                    name = files[0]
+            print(f"[翻译模型] 本地未找到 {name}，从 {repo} 下载…", file=sys.stderr)
+            return hf_hub_download(repo, name)
+        except Exception as e:
+            raise RuntimeError(
+                f"本地未找到翻译模型 {name or repo}，联网下载也失败：{e}\n"
+                f"可在设置页把「模型目录」指向已有权重所在目录，或直接填写 .gguf 的完整路径。"
+            ) from e
 
     def _model_source(self, cfg: Config) -> tuple[str, str]:
         raise NotImplementedError
@@ -175,3 +202,20 @@ def get_translator(cfg: Config) -> BaseTranslator:
     if cls is MockTranslator:
         return cls()
     return cls(cfg)
+
+
+# ---------------------------------------------------------------- 引擎/语言约束（单一来源）
+# 之前"Sakura 仅日文"这条规则在 UI 预校验与 SakuraTranslator.__init__ 里各写一份。
+# 这里收成单一映射，UI 校验直接查表；SakuraTranslator 的运行时检查作为纵深防御保留。
+ENGINE_LANG_LOCK: dict[str, str] = {"sakura": "ja"}
+
+# 源语言 → 推荐引擎（UI 语言联动引擎下拉时使用）
+ENGINE_RECOMMENDATION: dict[str, str] = {"ja": "sakura", "en": "llm", "zh": "llm", "other": "llm"}
+
+
+def engine_lang_conflict(engine: str, source_lang: str) -> str | None:
+    """若引擎与源语言不兼容，返回人话错误信息；兼容则返回 None。"""
+    locked = ENGINE_LANG_LOCK.get(engine)
+    if locked and locked != source_lang:
+        return f"{engine} 引擎仅支持源语言「{locked}」，当前选择的是「{source_lang}」。"
+    return None

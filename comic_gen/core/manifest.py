@@ -15,6 +15,10 @@ class ModelSpec:
     kind: str            # detect | ocr | llm_gguf | inpaint
     approx_size: str     # 人类可读大小，界面提示用
     required: bool        # False = 按需（如 Sakura 仅日文才需要）
+    filename: str = ""   # llm_gguf 专用：确切的 .gguf 文件名
+    # 为什么要写死 filename：留空时代码只能调 list_repo_files() 联网列目录来挑量化，
+    # 于是"权重明明在盘上却因为网络抖动崩掉"（实测 SSL UNEXPECTED_EOF）。
+    # 写死之后本地发现全程离线，见 core.model_locator。
 
 
 MODEL_MANIFEST: dict[str, ModelSpec] = {
@@ -41,14 +45,18 @@ MODEL_MANIFEST: dict[str, ModelSpec] = {
         kind="llm_gguf",
         approx_size="~4.3GB",
         required=False,
+        filename="sakura-7b-qwen2.5-v1.0-iq4xs.gguf",
     ),
+    # 与同机 subgen 项目声明的 repo/文件名保持完全一致，两个项目共用 F:\hf_cache 下的同一份权重。
+    # 改这里前先确认 subgen 那边（src/translate/mod.rs）用的是不是同一个文件名，否则会各下一份。
     "llm": ModelSpec(
         key="llm",
         label="通用本地翻译（多语言）",
-        repo="Qwen/Qwen2.5-7B-Instruct-GGUF",
+        repo="unsloth/Qwen3-4B-Instruct-2507-GGUF",
         kind="llm_gguf",
-        approx_size="~4.7GB",
+        approx_size="~2.4GB",
         required=False,
+        filename="Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
     ),
     "lama": ModelSpec(
         key="lama",

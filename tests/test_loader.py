@@ -27,6 +27,7 @@ def test_pack_output_folder():
         # Create LoadedInput for folder
         loaded = LoadedInput(
             kind="folder",
+            input_path=tmpdir,
             work_dir=tmpdir,
             rel_names=["page_001.png", "page_002.png"],
             pages=[],
@@ -56,6 +57,7 @@ def test_pack_output_zip():
 
         loaded = LoadedInput(
             kind="zip",
+            input_path=tmpdir / "in.zip",
             work_dir=tmpdir,
             rel_names=["page_001.png", "page_002.png"],
             pages=[],
@@ -88,6 +90,7 @@ def test_pack_output_missing_images():
 
         loaded = LoadedInput(
             kind="zip",
+            input_path=tmpdir / "in.zip",
             work_dir=tmpdir,
             rel_names=["page_001.png", "page_002.png"],  # page_002 doesn't exist
             pages=[],

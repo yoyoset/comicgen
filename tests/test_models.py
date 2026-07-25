@@ -45,7 +45,7 @@ def test_page_creation():
     assert page.image == "page_001.png"
     assert page.status == STATUS_PENDING
     assert page.regions == []
-    assert page.error is None
+    assert page.error == ""  # 空串表示"无错误"，序列化进 pages.json 时比 None 干净
 
 
 def test_page_with_regions():
@@ -68,7 +68,7 @@ def test_page_to_dict_roundtrip():
         height=600,
         status=STATUS_RENDERED,
         regions=[region],
-        error=None,
+        error="",
     )
 
     page_dict = page.to_dict()

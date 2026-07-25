@@ -73,6 +73,25 @@ class Runner:
             self._translator = get_translator(self.cfg)
         return self._translator
 
+    def _needed_model_keys(self) -> list[str]:
+        keys = ["detect", "lama"]
+        if self.cfg.source_lang == "ja":
+            keys.append("ocr_ja")
+        if self.cfg.translator in ("sakura", "llm"):
+            keys.append(self.cfg.translator)
+        return keys
+
+    def _go_offline_if_ready(self) -> None:
+        """本次任务要用的模型都在本地时切离线，免得网络不通时白等 HF 的 etag 重试。"""
+        from ..core.environment import enable_offline_mode, is_model_cached
+
+        missing = [k for k in self._needed_model_keys() if not is_model_cached(k)]
+        if missing:
+            self.log(f"以下模型尚未就位，需要联网获取: {'、'.join(missing)}")
+            return
+        enable_offline_mode()
+        self.log("模型均已在本地，本次运行不联网")
+
     # ------------------------------------------------------------ 中间产物
     @staticmethod
     def _pages_file(work_dir: Path) -> Path:
@@ -100,9 +119,18 @@ class Runner:
     # ------------------------------------------------------------ 主流程
     def run(self, input_path: str | Path, output_path: str | Path | None = None,
             progress=None, rerender: bool = False, load_cb=None,
-            should_cancel: Callable[[], bool] | None = None) -> JobReport:
+            should_cancel: Callable[[], bool] | None = None,
+            work_dir_override: str | Path | None = None) -> JobReport:
+        """input_path 必须是最初翻译时的原始输入（pages.json 里记录的指纹），
+        而不是翻译产出的工作目录/输出路径——否则 _load_pages 的指纹校验不通过，
+        缓存会被当作"输入不一致"丢弃，rerender 实质上会从零重跑。
+        跨会话场景（不知道原始输入路径，只知道工作目录）用 work_dir_override 绕开
+        _work_dir 的重新推导，直接指定工作目录；此时仍需传入正确的 input_path
+        以便重新解包出干净的原图供抹字/渲染使用。
+        """
         input_path = Path(input_path)
-        work_dir = self._work_dir(input_path, output_path)
+        self._go_offline_if_ready()
+        work_dir = Path(work_dir_override) if work_dir_override else self._work_dir(input_path, output_path)
         extract_dir = work_dir / "_extract"
         if extract_dir.exists():  # 清空旧解包，防止不同输入互相污染
             shutil.rmtree(extract_dir)
@@ -234,9 +262,10 @@ class Runner:
 
     # ------------------------------------------------------------ 重渲染（译后编辑）
     def rerender(self, input_path: str | Path, output_path: str | Path | None = None,
-                 progress=None, should_cancel: Callable[[], bool] | None = None) -> JobReport:
+                 progress=None, should_cancel: Callable[[], bool] | None = None,
+                 work_dir_override: str | Path | None = None) -> JobReport:
         return self.run(input_path, output_path, progress=progress, rerender=True,
-                         should_cancel=should_cancel)
+                         should_cancel=should_cancel, work_dir_override=work_dir_override)
 
     # ------------------------------------------------------------ 内部
     def _work_dir(self, input_path: Path, output_path) -> Path:

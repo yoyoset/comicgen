@@ -1,81 +1,59 @@
-"""Tests for pipeline.translate (offline, no API/network)."""
-import pytest
+"""pipeline.translate 的离线测试：不加载真模型、不联网。
+
+注意：这些测试之前引用的是已删除的 DeepSeekTranslator，且断言 MockTranslator 原样返回输入
+（它实际返回"测试译文N号"）——因为 venv 里根本没装 pytest，从来没跑起来过。
+现在按真实行为重写。
+"""
 from comic_gen.core.config import Config
-from comic_gen.pipeline.translate import MockTranslator, DeepSeekTranslator
+from comic_gen.pipeline.translate import (
+    BaseTranslator,
+    MockTranslator,
+    engine_lang_conflict,
+    get_translator,
+)
 
 
-def test_mock_translator_basic():
-    """Test MockTranslator returns input texts as-is."""
+def test_mock_translator_marks_each_text():
     cfg = Config(translator="mock")
-    translator = MockTranslator()
-
-    texts = ["本文1", "本文2", "本文3"]
-    result = translator.translate(texts, cfg)
-
-    assert len(result) == len(texts)
-    assert result == texts
+    result = MockTranslator().translate(["本文1", "本文2", "本文3"], cfg)
+    assert result == ["测试译文1号", "测试译文2号", "测试译文3号"]
 
 
 def test_mock_translator_empty():
-    """Test MockTranslator with empty list."""
-    translator = MockTranslator()
-    cfg = Config()
-    result = translator.translate([], cfg)
-    assert result == []
+    assert MockTranslator().translate([], Config()) == []
 
 
-def test_mock_translator_single():
-    """Test MockTranslator with single text."""
-    translator = MockTranslator()
-    cfg = Config()
-    result = translator.translate(["単一"], cfg)
-    assert result == ["単一"]
+def test_get_translator_mock_needs_no_model():
+    tr = get_translator(Config(translator="mock"))
+    assert isinstance(tr, MockTranslator)
 
 
-def test_deepseek_translator_no_api_key():
-    """Test DeepSeekTranslator init requires API key or env."""
-    cfg = Config(translator="deepseek", deepseek_api_key="")
-    translator = DeepSeekTranslator()
-
-    # resolved_api_key should check env or default
-    api_key = cfg.resolved_api_key()
-    # Test doesn't fail; the translator checks at translate() time
-    # This test just ensures init doesn't crash
-    assert translator is not None
-
-
-def test_deepseek_translator_with_key():
-    """Test DeepSeekTranslator can be initialized with API key."""
-    cfg = Config(translator="deepseek", deepseek_api_key="test-key-123")
-    api_key = cfg.resolved_api_key()
-    assert api_key == "test-key-123"
+def test_get_translator_unknown_engine():
+    try:
+        get_translator(Config(translator="nope"))
+    except ValueError as e:
+        assert "nope" in str(e)
+    else:
+        raise AssertionError("未知引擎应该抛 ValueError")
 
 
 def test_parse_numbered_basic():
-    """Test _parse_numbered output format."""
-    from comic_gen.pipeline.translate import DeepSeekTranslator
-
-    # This method is private but important for alignment
-    translator = DeepSeekTranslator()
-
-    # Simulate LLM output: "1. 翻译1\n2. 翻译2"
-    llm_output = "1. 本文1的翻译\n2. 本文2的翻译"
-    result = translator._parse_numbered(llm_output, 2)
-
-    assert len(result) == 2
-    assert "翻译1" in result[0] or "本文1" in result[0]
+    result = BaseTranslator._parse_numbered("1. 本文1的翻译\n2. 本文2的翻译", 2)
+    assert result == ["本文1的翻译", "本文2的翻译"]
 
 
-def test_parse_numbered_mismatch():
-    """Test _parse_numbered with count mismatch."""
-    from comic_gen.pipeline.translate import DeepSeekTranslator
+def test_parse_numbered_tolerates_cjk_punctuation():
+    """LLM 常输出全角标点，编号解析不能只认半角点。"""
+    assert BaseTranslator._parse_numbered("1、甲\n2：乙", 2) == ["甲", "乙"]
 
-    translator = DeepSeekTranslator()
 
-    # Output has 2 items but we expect 3
-    llm_output = "1. 翻译1\n2. 翻译2"
-    result = translator._parse_numbered(llm_output, 3)
+def test_parse_numbered_returns_none_when_short():
+    """条数对不上必须返回 None 触发逐条重试，绝不能返回错位的结果。"""
+    assert BaseTranslator._parse_numbered("1. 翻译1\n2. 翻译2", 3) is None
 
-    # Should return None or fallback (see implementation)
-    # This tests the robustness of the retry logic
-    assert result is None or isinstance(result, list)
+
+def test_engine_lang_conflict():
+    assert engine_lang_conflict("sakura", "ja") is None
+    assert engine_lang_conflict("llm", "en") is None
+    msg = engine_lang_conflict("sakura", "en")
+    assert msg and "ja" in msg
