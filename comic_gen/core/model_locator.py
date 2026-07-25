@@ -142,6 +142,14 @@ def _missing_members(dir_path: Path, member_files: tuple[tuple[str, ...], ...]) 
     return tuple(g[0] for g in member_files if not any(f in present for f in g))
 
 
+def _dir_size(d: Path) -> int:
+    """目录内直属文件的总大小（不递归子目录——manifest 声明的 member_files 都是直属文件）。"""
+    try:
+        return sum(f.stat().st_size for f in d.iterdir() if f.is_file())
+    except OSError:
+        return 0
+
+
 def _repo_cache_dirname(repo: str) -> str:
     return "models--" + repo.replace("/", "--")
 
@@ -203,7 +211,9 @@ def resolve_status(key: str, *, bindings: Mapping[str, str] | None = None,
         p = Path(bound)
         exists = p.is_dir()
         missing = _missing_members(p, spec.member_files) if exists else tuple(g[0] for g in spec.member_files)
-        return status_of(p, is_binding=True, layout=LAYOUT_DIR, exists=exists, missing_members=missing)
+        size = _dir_size(p) if exists and not missing else 0
+        return status_of(p, is_binding=True, layout=LAYOUT_DIR, exists=exists,
+                          size=size, missing_members=missing)
 
     best_incomplete: tuple[Path, tuple[str, ...]] | None = None
     for cand in _dir_search_candidates(spec, model_dir):
@@ -211,7 +221,8 @@ def resolve_status(key: str, *, bindings: Mapping[str, str] | None = None,
             continue
         missing = _missing_members(cand, spec.member_files)
         if not missing:
-            return status_of(cand, is_binding=False, layout=LAYOUT_DIR, exists=True, missing_members=())
+            return status_of(cand, is_binding=False, layout=LAYOUT_DIR, exists=True,
+                              size=_dir_size(cand), missing_members=())
         if best_incomplete is None:
             best_incomplete = (cand, missing)
     if best_incomplete:

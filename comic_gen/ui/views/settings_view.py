@@ -6,7 +6,8 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtWidgets
 
-from ...core.settings import AppSettings, default_settings_path
+from ...core.paths import settings_path
+from ...core.settings import AppSettings
 
 
 class SettingsView(QtWidgets.QWidget):
@@ -78,7 +79,7 @@ class SettingsView(QtWidgets.QWidget):
         self.reset_btn.clicked.connect(self._reset_defaults)
         lay.addRow(self.reset_btn)
 
-        path_lbl = QtWidgets.QLabel(f"设置文件：{default_settings_path()}")
+        path_lbl = QtWidgets.QLabel(f"设置文件：{settings_path()}")
         path_lbl.setStyleSheet("color: gray;")
         path_lbl.setWordWrap(True)
         lay.addRow(path_lbl)

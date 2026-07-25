@@ -1,13 +1,13 @@
 """QThread 工作对象：桥接 core/pipeline 与 Qt 信号。不含业务决策，只做调用转发。"""
 from __future__ import annotations
 
-import sys
 import traceback
 
 from PySide6 import QtCore
 
 from ..core.job import JobRequest
 from ..core.manifest import MODEL_MANIFEST
+from ..core.settings import AppSettings
 
 
 class PipelineWorker(QtCore.QObject):
@@ -51,50 +51,54 @@ class PipelineWorker(QtCore.QObject):
 
 
 class ModelWorker(QtCore.QObject):
-    """模型检查/下载：模型清单来自 core.manifest.MODEL_MANIFEST，与流水线共用同一份 repo 定义。"""
+    """按 key 逐个检查/下载模型：模型清单来自 core.manifest.MODEL_MANIFEST，
+    与流水线共用同一份 repo/文件定义。构造各自的引擎对象会顺带触发它们各自的
+    自动下载逻辑（HF from_pretrained / hf_hub_download / simple_lama_inpainting）。
+    """
 
     log = QtCore.Signal(str)
     finished = QtCore.Signal(str)
 
-    def __init__(self, model_dir: str, want_sakura: bool, want_llm: bool, do_download: bool):
+    def __init__(self, settings: AppSettings, keys: list[str], do_download: bool):
         super().__init__()
-        self.model_dir = model_dir
-        self.want_sakura = want_sakura
-        self.want_llm = want_llm
+        self.settings = settings
+        self.keys = keys
         self.do_download = do_download
 
     @QtCore.Slot()
     def run(self):
+        from ..core.config import Config
         from ..core.environment import apply_model_dir, is_model_cached
 
         msgs = []
         try:
-            apply_model_dir(self.model_dir)
-            plan_keys = ["detect", "ocr_ja"]
-            if self.want_sakura:
-                plan_keys.append("sakura")
-            if self.want_llm:
-                plan_keys.append("llm")
+            apply_model_dir(self.settings.model_dir)
+            bindings = self.settings.model_files
 
             def build(key: str):
-                from ..core.config import Config
                 if key == "detect":
                     from ..pipeline.detect import ComicDetector
-                    cfg = Config()
-                    ComicDetector(cfg.detector_repo, cfg.device, cfg.det_threshold)
+                    cfg = Config(model_paths=bindings)
+                    ComicDetector(bindings.get("detect") or cfg.detector_repo, cfg.device, cfg.det_threshold)
                 elif key == "ocr_ja":
                     from ..pipeline.ocr import OcrEngine
-                    OcrEngine(Config(source_lang="ja"))
+                    OcrEngine(Config(source_lang="ja", model_paths=bindings))
+                elif key == "ocr_other":
+                    from ..pipeline.ocr import OcrEngine
+                    OcrEngine(Config(source_lang="en", model_paths=bindings))
                 elif key == "sakura":
                     from ..pipeline.translate import SakuraTranslator
-                    SakuraTranslator(Config(translator="sakura", source_lang="ja"))
+                    SakuraTranslator(Config(translator="sakura", source_lang="ja", model_paths=bindings))
                 elif key == "llm":
                     from ..pipeline.translate import GeneralLLMTranslator
-                    GeneralLLMTranslator(Config(translator="llm", source_lang="en"))
+                    GeneralLLMTranslator(Config(translator="llm", source_lang="en", model_paths=bindings))
+                elif key == "lama":
+                    from ..pipeline.inpaint import Inpainter
+                    Inpainter("cuda", model_path=bindings.get("lama"))
 
-            for key in plan_keys:
+            for key in self.keys:
                 spec = MODEL_MANIFEST[key]
-                cached = is_model_cached(key)
+                cached = is_model_cached(key, model_dir=self.settings.model_dir, bindings=bindings)
                 if cached:
                     msgs.append(f"[OK] {spec.label}：已有（复用）")
                     self.log.emit(f"{spec.label} 已有")
@@ -109,18 +113,28 @@ class ModelWorker(QtCore.QObject):
                 except Exception as e:
                     msgs.append(f"[FAIL] {spec.label}：{e}")
 
-            # LaMa：非 HF repo，走内置下载
-            lama_spec = MODEL_MANIFEST["lama"]
-            try:
-                from ..pipeline.inpaint import Inpainter
-                Inpainter("cuda")
-                msgs.append(f"[OK] {lama_spec.label}：已就绪（系统缓存）")
-            except Exception as e:
-                msgs.append(f"[FAIL] {lama_spec.label}：{e}")
-
-            loc = (self.model_dir or "").strip().strip('"') or (
-                "exe同级 models/hf" if getattr(sys, "frozen", False) else "默认 HF 缓存"
-            )
-            self.finished.emit("模型目录：" + loc + "\n" + "\n".join(msgs))
+            self.finished.emit("\n".join(msgs))
         except Exception as e:
             self.finished.emit("失败：" + str(e) + "\n" + traceback.format_exc())
+
+
+class ScanWorker(QtCore.QObject):
+    """在后台线程算全部 6 个模型的状态 + GGUF 查重，避免共享大目录（几十万文件）时卡 UI。"""
+
+    finished = QtCore.Signal(dict, dict)  # (key -> ModelStatus, key -> list[Path] 重复项)
+
+    def __init__(self, settings: AppSettings):
+        super().__init__()
+        self.settings = settings
+
+    @QtCore.Slot()
+    def run(self):
+        from ..core.model_locator import find_duplicates, scan_all_status
+
+        status = scan_all_status(bindings=self.settings.model_files, model_dir=self.settings.model_dir)
+        dupes = {
+            key: dups
+            for key in MODEL_MANIFEST
+            if len(dups := find_duplicates(key, model_dir=self.settings.model_dir)) > 1
+        }
+        self.finished.emit(status, dupes)

@@ -9,6 +9,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..core.environment import apply_model_dir, detect_environment
 from ..core.job import JobReport, JobRequest, read_original_input, resolve_pages_json
+from ..core.manifest import MODEL_MANIFEST
 from ..core.settings import AppSettings
 from ..pipeline.translate import engine_lang_conflict
 from .job_controller import STATE_RUNNING, JobController
@@ -16,7 +17,7 @@ from .views.diagnostics_view import DiagnosticsView
 from .views.model_view import ModelView
 from .views.settings_view import SettingsView
 from .views.translate_view import TranslateView
-from .workers import ModelWorker
+from .workers import ModelWorker, ScanWorker
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -31,6 +32,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._pending_request: JobRequest | None = None  # 当前提交给 controller 的请求，finished 时用于记录
         self._m_thread: QtCore.QThread | None = None
         self._m_worker: ModelWorker | None = None
+        self._s_thread: QtCore.QThread | None = None
+        self._s_worker: ScanWorker | None = None
 
         self.translate_view = TranslateView()
         self.settings_view = SettingsView()
@@ -90,8 +93,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.settings_view.changed.connect(self._on_settings_changed)
 
-        self.model_view.checkRequested.connect(lambda d, s, l: self._start_model_worker(d, s, l, False))
-        self.model_view.downloadRequested.connect(lambda d, s, l: self._start_model_worker(d, s, l, True))
+        self.model_view.scanRequested.connect(self._start_scan_worker)
+        self.model_view.downloadRequested.connect(lambda k: self._start_model_worker([k], True))
+        self.model_view.downloadAllMissingRequested.connect(self._on_download_all_missing)
+        self.model_view.bindRequested.connect(self._on_model_bind)
+        self.model_view.clearBindingRequested.connect(self._on_model_clear_binding)
+        self.model_view.dedupeRequested.connect(self._on_model_dedupe)
 
         self.diagnostics_view.recheckRequested.connect(self._run_diagnostics)
 
@@ -111,7 +118,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _load_settings_into_views(self):
         self.settings_view.load_from(self.settings)
-        self.model_view.set_default_dir(self.settings.model_dir)
+        self.model_view.set_model_dir_label(self.settings.model_dir)
+        self.model_view.set_current_bindings(self.settings.model_files)
         self.translate_view.set_last_browse_dir(self.settings.last_input_dir)
         apply_model_dir(self.settings.model_dir)
 
@@ -141,8 +149,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_settings_changed(self):
         self.settings_view.apply_to(self.settings)
         self.settings.save()
-        self.model_view.set_default_dir(self.settings.model_dir)
+        self.model_view.set_model_dir_label(self.settings.model_dir)
         apply_model_dir(self.settings.model_dir)
+        self._start_scan_worker()
 
     # ------------------------------------------------------------ 翻译
     def _on_start(self):
@@ -275,25 +284,81 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "失败", str(result))
 
     # ------------------------------------------------------------ 模型管理
-    def _start_model_worker(self, model_dir: str, want_sakura: bool, want_llm: bool, do_download: bool):
-        d = model_dir or self.settings.model_dir
+    def _start_model_worker(self, keys: list[str], do_download: bool):
+        if self.job_controller.is_busy():
+            return
         self.model_view.set_busy(True)
         self._m_thread = QtCore.QThread()
-        self._m_worker = ModelWorker(d, want_sakura, want_llm, do_download)
+        self._m_worker = ModelWorker(self.settings, keys, do_download)
         self._m_worker.moveToThread(self._m_thread)
         self._m_thread.started.connect(self._m_worker.run)
         self._m_worker.finished.connect(self._on_model_done)
         self._m_worker.finished.connect(self._m_thread.quit)
         self._m_thread.start()
 
+    def _on_download_all_missing(self):
+        missing = self.model_view.missing_keys()
+        if missing:
+            self._start_model_worker(missing, True)
+
     def _on_model_done(self, text: str):
         self.model_view.show_status(text)
+        self._start_scan_worker()  # 下载/检查完刷新一遍状态；同时会把 set_busy(False) 一起做了
+
+    def _start_scan_worker(self):
+        if self.job_controller.is_busy():
+            return
+        self.model_view.set_busy(True)
+        self._s_thread = QtCore.QThread()
+        self._s_worker = ScanWorker(self.settings)
+        self._s_worker.moveToThread(self._s_thread)
+        self._s_thread.started.connect(self._s_worker.run)
+        self._s_worker.finished.connect(self._on_scan_done)
+        self._s_worker.finished.connect(self._s_thread.quit)
+        self._s_thread.start()
+
+    def _on_scan_done(self, statuses: dict, dupes: dict):
+        self.model_view.set_current_bindings(self.settings.model_files)
+        self.model_view.refresh(statuses, dupes)
         self.model_view.set_busy(False)
         self._run_diagnostics()
 
+    def _on_model_bind(self, key: str, path: str):
+        self.settings.model_files[key] = path
+        self.settings.save()
+        self._start_scan_worker()
+
+    def _on_model_clear_binding(self, key: str):
+        if self.settings.model_files.pop(key, None) is not None:
+            self.settings.save()
+            self._start_scan_worker()
+
+    def _on_model_dedupe(self, key: str):
+        from ..core.model_locator import find_duplicates, trash_destination
+
+        dups = find_duplicates(key, model_dir=self.settings.model_dir)
+        if len(dups) <= 1:
+            return
+        bound = self.settings.model_files.get(key)
+        keep = Path(bound) if bound and Path(bound) in dups else dups[0]
+        moved, errors = [], []
+        for p in dups:
+            if p == keep:
+                continue
+            try:
+                p.rename(trash_destination(p))
+                moved.append(str(p))
+            except OSError as e:
+                errors.append(f"{p}: {e}")
+        msg = f"{MODEL_MANIFEST[key].label}：保留 {keep}，移入回收站 {len(moved)} 份"
+        if errors:
+            msg += "\n失败：\n" + "\n".join(errors)
+        self.model_view.show_status(msg)
+        self._start_scan_worker()
+
     # ------------------------------------------------------------ 环境自检
     def _run_diagnostics(self):
-        report = detect_environment(model_dir=self.settings.model_dir)
+        report = detect_environment(model_dir=self.settings.model_dir, bindings=self.settings.model_files)
         self.diagnostics_view.show_report(report)
 
     # ------------------------------------------------------------ 关闭
