@@ -14,7 +14,8 @@ class OcrEngine:
         if self.lang == "ja":
             from manga_ocr import MangaOcr
 
-            self._mocr = MangaOcr()
+            model_dir = cfg.model_paths.get("ocr_ja")
+            self._mocr = MangaOcr(pretrained_model_name_or_path=model_dir) if model_dir else MangaOcr()
             self._easy = None
         else:
             try:
@@ -25,7 +26,9 @@ class OcrEngine:
                     "非日文 OCR 需要 easyocr，请运行: .\\.venv\\Scripts\\python.exe -m pip install easyocr"
                 ) from e
             code = {"en": ["en"], "zh": ["ch_sim", "en"]}.get(self.lang, ["en"])
-            self._easy = easyocr.Reader(code, gpu=torch.cuda.is_available())
+            storage_dir = cfg.model_paths.get("ocr_other")
+            self._easy = easyocr.Reader(code, gpu=torch.cuda.is_available(),
+                                         model_storage_directory=storage_dir)
             self._mocr = None
 
     def recognize_regions(self, image: Image.Image, regions: list[Region], pad: int = 6):

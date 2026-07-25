@@ -45,7 +45,8 @@ class Runner:
             from .detect import ComicDetector
 
             self.log("加载检测模型…")
-            self._detector = ComicDetector(self.cfg.detector_repo, self.cfg.device, self.cfg.det_threshold)
+            repo = self.cfg.model_paths.get("detect") or self.cfg.detector_repo
+            self._detector = ComicDetector(repo, self.cfg.device, self.cfg.det_threshold)
         return self._detector
 
     def _get_ocr(self):
@@ -61,7 +62,7 @@ class Runner:
             from .inpaint import Inpainter
 
             self.log("加载抹字模型…")
-            self._inpainter = Inpainter(self.cfg.device)
+            self._inpainter = Inpainter(self.cfg.device, model_path=self.cfg.model_paths.get("lama"))
         return self._inpainter
 
     def _get_translator(self):

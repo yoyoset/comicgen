@@ -1,6 +1,8 @@
 """抹字：文本掩码生成 + LaMa 修复，同时采样文字颜色供渲染使用。"""
 from __future__ import annotations
 
+import os
+
 import cv2
 import numpy as np
 from PIL import Image
@@ -9,8 +11,15 @@ from ..core.models import Region
 
 
 class Inpainter:
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str = "cuda", model_path: str | None = None):
         from simple_lama_inpainting import SimpleLama
+
+        # simple_lama_inpainting 读 LAMA_MODEL 环境变量决定用哪个权重文件；
+        # 没绑定时必须 pop 掉，否则上一次运行/别的程序留下的同名变量会悄悄劫持这次加载。
+        if model_path:
+            os.environ["LAMA_MODEL"] = model_path
+        else:
+            os.environ.pop("LAMA_MODEL", None)
 
         try:
             self._lama = SimpleLama(device=device)
