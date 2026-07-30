@@ -81,6 +81,31 @@ def test_page_to_dict_roundtrip():
     assert page_restored.regions[0].source_text == "テスト"
 
 
+def test_region_score_default_and_roundtrip():
+    """score 默认 0.0；序列化往返保留精确值。"""
+    r = Region(bbox=(0, 0, 10, 10))
+    assert r.score == 0.0
+
+    r2 = Region(bbox=(0, 0, 10, 10), score=0.873)
+    restored = Region.from_dict(r2.to_dict())
+    assert restored.score == 0.873
+
+
+def test_region_from_dict_without_score_defaults_to_zero():
+    """读旧版（无 score 字段）的 pages.json 不应报错，score 回落默认值。"""
+    old_dict = {
+        "bbox": (1, 2, 3, 4),
+        "direction": "horizontal",
+        "source_text": "a",
+        "translated_text": "b",
+        "color": (0, 0, 0),
+        "kind": "text_free",
+    }
+    r = Region.from_dict(old_dict)
+    assert r.score == 0.0
+    assert r.source_text == "a"
+
+
 def test_status_constants():
     """Test that status constants are defined."""
     from comic_gen.core.models import STATUS_DETECTED, STATUS_OCRED, STATUS_TRANSLATED

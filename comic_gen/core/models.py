@@ -22,13 +22,14 @@ class Region:
     translated_text: str = ""
     color: list[int] = field(default_factory=lambda: [0, 0, 0])
     kind: str = "text"  # text_bubble | text_free
+    score: float = 0.0  # 检测置信度，0.0 = 未知/旧数据（不参与去重判定的默认值）
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Region":
-        keys = ("bbox", "direction", "source_text", "translated_text", "color", "kind")
+        keys = ("bbox", "direction", "source_text", "translated_text", "color", "kind", "score")
         return cls(**{k: d[k] for k in keys if k in d})
 
 
