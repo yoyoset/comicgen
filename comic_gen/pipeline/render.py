@@ -1,12 +1,14 @@
 """译文渲染：横排/竖排，字号自适应收缩防溢出，居中，自动描边。"""
 from __future__ import annotations
 
+import sys
+from functools import lru_cache
+
 from PIL import Image, ImageDraw, ImageFont
 
 from ..core.config import Config
 from ..core.models import DIRECTION_HORIZONTAL, DIRECTION_VERTICAL, Region
 
-_LINE_GAP = 1.3   # 横排行距倍数
 _COL_GAP = 1.35   # 竖排列距倍数
 
 
@@ -20,8 +22,13 @@ _FONT_FALLBACKS = (
 )
 
 
+@lru_cache(maxsize=None)
 def _load_font(path: str, size: int):
-    """多级兜底：指定字体 → 常见系统 CJK 字体 → PIL 默认字体（绝不抛异常）。"""
+    """多级兜底：指定字体 → 常见系统 CJK 字体 → PIL 默认字体（绝不抛异常）。
+
+    加缓存：_pick_size 的字号搜索循环里每个候选字号都会调一次，不缓存等于每页每个
+    区域都要重新打开一遍字体文件。
+    """
     for p in (path, *_FONT_FALLBACKS):
         if not p:
             continue
@@ -30,6 +37,23 @@ def _load_font(path: str, size: int):
         except OSError:
             continue
     return ImageFont.load_default()
+
+
+def _line_advance(font) -> float:
+    """一行的实际竖直进给：ascent+descent。
+
+    实测 msyh.ttc 在 size 10~48 下 ascent+descent 恒为 1.33~1.40 倍字号，旧代码假设的
+    size*1.3 系统性偏小，导致相邻行互相压叠。非 FreeType 字体理论上不会走到这条流水线，
+    但仍加 getattr 兜底避免异常打断整页渲染。
+    """
+    metrics = getattr(font, "getmetrics", None)
+    if metrics is not None:
+        try:
+            ascent, descent = metrics()
+            return ascent + descent
+        except Exception:
+            pass
+    return font.size * 1.35
 
 
 def _wrap_horizontal(draw, text: str, font, max_w: int) -> list[str]:
@@ -49,28 +73,40 @@ def _wrap_horizontal(draw, text: str, font, max_w: int) -> list[str]:
     return lines
 
 
-def _fits(draw, text: str, font, bw: int, bh: int, direction: str) -> bool:
+def _fits(draw, text: str, font, bw: int, bh: int, direction: str, sw: int = 0) -> bool:
+    """sw（描边宽度）会让实际墨迹比字号本身宽/高各多出 sw 一圈，排版判定要预留出来。"""
+    eff_bw, eff_bh = max(1, bw - 2 * sw), max(1, bh - 2 * sw)
     if direction == DIRECTION_VERTICAL:
-        per_col = max(1, int(bh // (font.size * 1.05)))
+        per_col = max(1, int(eff_bh // (font.size * 1.05)))
         n_cols = -(-len(text.replace("\n", "")) // per_col)
-        return n_cols * font.size * _COL_GAP <= bw
-    return len(_wrap_horizontal(draw, text, font, bw)) * font.size * _LINE_GAP <= bh
+        return n_cols * font.size * _COL_GAP <= eff_bw
+    return len(_wrap_horizontal(draw, text, font, eff_bw)) * _line_advance(font) <= eff_bh
 
 
-def _pick_size(draw, text: str, bw: int, bh: int, direction: str, cfg: Config):
-    hi = min(cfg.max_font_size, bh, bw if direction == DIRECTION_HORIZONTAL else bh)
+def _stroke_for(color, size: int) -> tuple[tuple, int]:
+    """浅色文字（气泡外白字）配黑描边，宽度随字号缩放；深色文字不描边（气泡内描边会糊）。
+
+    旧实现描边固定 1px，不随字号变化——小字描边显得过粗、大字描边显得过细。
+    """
+    if sum(color) >= 384:
+        return (0, 0, 0), max(1, round(size * 0.06))
+    return (0, 0, 0), 0
+
+
+def _pick_size(draw, text: str, bw: int, bh: int, direction: str, cfg: Config, color):
+    """返回 (font, stroke_width, fits)。fits=False 表示缩到 min_font_size 仍然放不下。"""
+    # 竖排原先的上界只看 bh，完全没用到 bw——单列文字所需宽度 size*_COL_GAP 也可能超框宽，
+    # 从 max_font_size 起试没有意义。横排本来就用 bw，这里统一处理不分方向。
+    hi = min(cfg.max_font_size, bh, bw)
     for size in range(hi, cfg.min_font_size - 1, -2):
         font = _load_font(cfg.font_path, size)
-        if _fits(draw, text, font, bw, bh, direction):
-            return font
-    return _load_font(cfg.font_path, cfg.min_font_size)
-
-
-def _stroke_for(color) -> tuple[tuple, int]:
-    """浅色文字（气泡外白字）配黑描边；深色文字不描边（气泡内描边会糊）。"""
-    if sum(color) >= 384:
-        return (0, 0, 0), 1
-    return (0, 0, 0), 0
+        sw = _stroke_for(color, size)[1]
+        if _fits(draw, text, font, bw, bh, direction, sw):
+            return font, sw, True
+    size = cfg.min_font_size
+    font = _load_font(cfg.font_path, size)
+    sw = _stroke_for(color, size)[1]
+    return font, sw, _fits(draw, text, font, bw, bh, direction, sw)
 
 
 def render_page(image: Image.Image, regions: list[Region], cfg: Config) -> Image.Image:
@@ -87,9 +123,15 @@ def render_page(image: Image.Image, regions: list[Region], cfg: Config) -> Image
         direction = r.direction if cfg.direction == "auto" else cfg.direction
         if direction not in (DIRECTION_VERTICAL, DIRECTION_HORIZONTAL):
             direction = DIRECTION_HORIZONTAL
-        font = _pick_size(draw, text, bw, bh, direction, cfg)
         color = tuple(r.color) if r.color else (0, 0, 0)
-        stroke, sw = _stroke_for(color)
+        font, sw, fits = _pick_size(draw, text, bw, bh, direction, cfg, color)
+        if not fits:
+            print(
+                f"[渲染] 区域 bbox={r.bbox} 文字在最小字号 {cfg.min_font_size} 下仍超出边框，"
+                "可能显示不全",
+                file=sys.stderr,
+            )
+        stroke = (0, 0, 0)
         if direction == DIRECTION_VERTICAL:
             _draw_vertical(draw, text, font, bx, by, bw, bh, color, stroke, sw)
         else:
@@ -98,14 +140,15 @@ def render_page(image: Image.Image, regions: list[Region], cfg: Config) -> Image
 
 
 def _draw_horizontal(draw, text, font, bx, by, bw, bh, color, stroke, sw):
-    lines = _wrap_horizontal(draw, text, font, bw)
-    lh = font.size * _LINE_GAP
+    eff_bw = max(1, bw - 2 * sw)
+    lines = _wrap_horizontal(draw, text, font, eff_bw)
+    lh = _line_advance(font)
     cy = by + max(0.0, (bh - lh * len(lines)) / 2)
+    cx = bx + bw / 2
     for line in lines:
-        lw = draw.textlength(line, font=font)
         draw.text(
-            (bx + (bw - lw) / 2, cy), line,
-            font=font, fill=color, stroke_width=sw, stroke_fill=stroke,
+            (cx, cy + lh / 2), line,
+            font=font, fill=color, stroke_width=sw, stroke_fill=stroke, anchor="mm",
         )
         cy += lh
 
@@ -114,8 +157,9 @@ def _draw_vertical(draw, text, font, bx, by, bw, bh, color, stroke, sw):
     chars = [c for c in text if c != "\n"]
     if not chars:
         return
+    eff_bh = max(1, bh - 2 * sw)
     adv = font.size * 1.05
-    per_col = max(1, int(bh // adv))
+    per_col = max(1, int(eff_bh // adv))
     col_w = font.size * _COL_GAP
     n_cols = -(-len(chars) // per_col)
     x_right = bx + (bw + (n_cols - 1) * col_w) / 2  # 最右列中心 x
@@ -125,7 +169,7 @@ def _draw_vertical(draw, text, font, bx, by, bw, bh, color, stroke, sw):
         cx = x_right - col * col_w
         for ch in col_chars:
             draw.text(
-                (cx - font.size / 2, cy), ch,
-                font=font, fill=color, stroke_width=sw, stroke_fill=stroke,
+                (cx, cy + adv / 2), ch,
+                font=font, fill=color, stroke_width=sw, stroke_fill=stroke, anchor="mm",
             )
             cy += adv
