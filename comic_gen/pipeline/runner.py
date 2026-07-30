@@ -30,6 +30,15 @@ from .loader import LoadedInput, default_output_path, load_input, pack_output
 _STAGES = ("detect", "ocr", "translate", "render")
 
 
+def select_drawable_regions(regions: list) -> list:
+    """挑出既有原文也有译文的区域：只有这些该被抹字+重绘。
+
+    只有原文没有译文的区域（编号解析失败/漏译）必须原样保留，绝不能被 LaMa 抹掉——
+    抹了却没有译文可画，会在页面上留下不可逆的空白洞，比保留原文更糟。
+    """
+    return [r for r in regions if r.source_text.strip() and r.translated_text.strip()]
+
+
 class Runner:
     def __init__(self, cfg: Config | None = None, log=print):
         self.cfg = cfg or Config()
@@ -175,13 +184,16 @@ class Runner:
         # 1. 检测
         todo = [p for p in pages if p.status == STATUS_PENDING]
         if todo:
+            from .detect import reading_order
+
             det = self._get_detector()
+            rtl = self.cfg.source_lang == "ja"
             for i, p in enumerate(todo):
                 if cancelled():
                     self.log("已停止（检测阶段）")
                     return JobReport.cancelled(pages)
                 try:
-                    p.regions = det.detect(open_page(p))
+                    p.regions = reading_order(det.detect(open_page(p)), rtl=rtl)
                     p.width, p.height = Image.open(page_img[p.image]).size
                     p.status = STATUS_DETECTED
                 except Exception as e:
@@ -244,9 +256,13 @@ class Runner:
                     return JobReport.cancelled(pages)
                 try:
                     img = open_page(p)
-                    text_regions = [r for r in p.regions if r.source_text.strip()]
-                    cleaned = inpainter.inpaint_page(img, text_regions)
-                    out_img = render_page(cleaned, [r for r in text_regions if r.translated_text.strip()], self.cfg)
+                    drawable = select_drawable_regions(p.regions)
+                    total_text = sum(1 for r in p.regions if r.source_text.strip())
+                    skipped = total_text - len(drawable)
+                    if skipped:
+                        self.log(f"[警告] {p.image} 有 {skipped} 处区域未获得译文，保留原文不抹除")
+                    cleaned = inpainter.inpaint_page(img, drawable)
+                    out_img = render_page(cleaned, drawable, self.cfg)
                     out_path = trans_dir / p.image
                     ensure_dir(out_path.parent)
                     out_img.save(out_path)

@@ -1,10 +1,10 @@
-"""suppress_overlaps 纯函数测试（不加载模型/不需要网络）。
+"""suppress_overlaps / reading_order 纯函数测试（不加载模型/不需要网络）。
 
 场景来自实测复现：RT-DETRv2 的 post_process_object_detection 拍平 queries×classes 取
 top-k，同一个 query 在多个类别都超阈值时会输出完全相同的框（不同 label）。
 """
 from comic_gen.core.models import Region
-from comic_gen.pipeline.detect import _containment, _iou, suppress_overlaps
+from comic_gen.pipeline.detect import _containment, _iou, reading_order, suppress_overlaps
 
 
 def test_identical_box_different_label_keeps_higher_score():
@@ -72,3 +72,52 @@ def test_containment_helper_not_symmetric():
     small, big = [10, 10, 40, 40], [0, 0, 200, 200]
     assert _containment(small, big) > 0.9
     assert _containment(big, small) < 0.1
+
+
+# ---------------------------------------------------------------- reading_order
+
+
+def test_reading_order_rtl_same_row_right_before_left():
+    """实测场景：日漫同一行两个气泡，右边的先说话，rtl=True 时必须排在前面。"""
+    right = Region(bbox=[700, 100, 150, 120], kind="R")
+    left = Region(bbox=[150, 100, 150, 120], kind="L")
+    ordered = reading_order([left, right], rtl=True)
+    assert [r.kind for r in ordered] == ["R", "L"]
+
+
+def test_reading_order_ltr_same_row_left_before_right():
+    right = Region(bbox=[700, 100, 150, 120], kind="R")
+    left = Region(bbox=[150, 100, 150, 120], kind="L")
+    ordered = reading_order([left, right], rtl=False)
+    assert [r.kind for r in ordered] == ["L", "R"]
+
+
+def test_reading_order_rtl_tolerates_y_jitter():
+    """实测场景：气泡不会像素对齐，y 抖动 ±4px 不该打乱行内顺序。"""
+    right = Region(bbox=[700, 104, 150, 120], kind="R")
+    left = Region(bbox=[150, 100, 150, 120], kind="L")
+    ordered = reading_order([left, right], rtl=True)
+    assert [r.kind for r in ordered] == ["R", "L"]
+
+
+def test_reading_order_different_rows_top_before_bottom_regardless_of_rtl():
+    top = Region(bbox=[100, 50, 100, 80], kind="TOP")
+    bottom = Region(bbox=[100, 800, 100, 80], kind="BOTTOM")
+    for rtl in (True, False):
+        ordered = reading_order([bottom, top], rtl=rtl)
+        assert [r.kind for r in ordered] == ["TOP", "BOTTOM"]
+
+
+def test_reading_order_empty_input():
+    assert reading_order([], rtl=True) == []
+
+
+def test_reading_order_explicit_band_overrides_median():
+    a = Region(bbox=[0, 0, 50, 30], kind="A")
+    b = Region(bbox=[0, 40, 50, 30], kind="B")  # 40px 之差
+    # band=100 时两者被视为同一行，按 x 排（都是 x=0，稳定排序保持输入顺序）
+    ordered = reading_order([a, b], rtl=False, band=100)
+    assert [r.kind for r in ordered] == ["A", "B"]
+    # band=10 时 y//10 不同，分属不同行
+    ordered2 = reading_order([b, a], rtl=False, band=10)
+    assert [r.kind for r in ordered2] == ["A", "B"]

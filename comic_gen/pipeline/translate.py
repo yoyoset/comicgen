@@ -32,7 +32,7 @@ class BaseTranslator:
         raise NotImplementedError
 
     def _translate_batch_llm(self, texts: list[str], cfg: Config, call_llm) -> list[str]:
-        """整页编号批量翻译，保持对齐；解析失败则逐条重试。"""
+        """整页编号批量翻译，保持对齐；解析失败则逐条重试（带上下文）。"""
         numbered = "\n".join(f"{i + 1}. {t.replace(chr(10), ' ')}" for i, t in enumerate(texts))
         prompt = (
             f"把下列编号文本逐条翻译成{cfg.target_lang}，保持编号格式输出，"
@@ -40,21 +40,53 @@ class BaseTranslator:
         )
         result = self._parse_numbered(call_llm(prompt), len(texts))
         if result is None:
-            result = [
-                call_llm(f"把下面的文本翻译成{cfg.target_lang}，只输出译文：\n{t}") for t in texts
-            ]
+            print(
+                f"[翻译] 整页编号解析失败（编号缺失/重复/多出），回退逐条翻译（{self.name}）",
+                file=sys.stderr,
+            )
+            result = [call_llm(self._single_prompt(texts, i, cfg)) for i in range(len(texts))]
         return result
 
     @staticmethod
+    def _single_prompt(texts: list[str], i: int, cfg: Config) -> str:
+        """逐条兜底翻译的提示词：带前后一句原文作上下文，而不是完全孤立地翻译一句。"""
+        before = texts[i - 1] if i > 0 else ""
+        after = texts[i + 1] if i < len(texts) - 1 else ""
+        ctx = ""
+        if before or after:
+            ctx = (
+                f"（上下文，仅供理解语境，不要翻译）前一句：{before or '（无）'}；"
+                f"后一句：{after or '（无）'}\n"
+            )
+        return f"{ctx}把下面这句话翻译成{cfg.target_lang}，只输出译文：\n{texts[i]}"
+
+    @staticmethod
     def _parse_numbered(text: str, n: int) -> list[str] | None:
-        items = {}
+        """解析"编号. 内容"格式的整页批量翻译输出。
+
+        编号集合必须恰好是 {1..n}，重复编号直接判定失败——数量对不代表编号对
+        （实测：模型漏掉第 4 条却多输出一条第 7 条，len(items)==n 会误判为"解析成功"，
+        第 4 条变空、第 7 条被静默丢弃）。不匹配编号格式的行追加到上一条（多行译文的续行），
+        不再静默丢弃。
+        """
+        items: dict[int, str] = {}
+        last_key: int | None = None
         for line in text.strip().splitlines():
-            m = re.match(r"^\s*(\d+)\s*[.、．:：]\s*(.+)$", line.strip())
+            stripped = line.strip()
+            if not stripped:
+                continue
+            m = re.match(r"^\s*(\d+)\s*[.、．:：]\s*(.+)$", stripped)
             if m:
-                items[int(m.group(1))] = m.group(2).strip()
-        if len(items) < n:
+                idx = int(m.group(1))
+                if idx in items:
+                    return None  # 重复编号：无法判断哪个才是对的，判定解析失败
+                items[idx] = m.group(2).strip()
+                last_key = idx
+            elif last_key is not None:
+                items[last_key] = (items[last_key] + " " + stripped).strip()
+        if set(items.keys()) != set(range(1, n + 1)):
             return None
-        return [items.get(i + 1, "") for i in range(n)]
+        return [items[i + 1] for i in range(n)]
 
 
 class _LlamaGGUFTranslator(BaseTranslator):

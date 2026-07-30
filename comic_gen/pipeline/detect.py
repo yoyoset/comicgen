@@ -70,6 +70,31 @@ def suppress_overlaps(
     return kept
 
 
+def reading_order(regions: list[Region], rtl: bool = False, band: int | None = None) -> list[Region]:
+    """按阅读顺序排序：先按行分组（y 相近的框算同一行），行内按方向排序。
+
+    默认（rtl=False）行内左→右，适合西式/中文横排漫画。日漫需要 rtl=True（右→左）——
+    旧实现固定用 (y, +x) 排序，对日漫是反的：实测同一行两个气泡会把"回复"排在"提问"前面，
+    整页的编号批量翻译因此拿到错乱的对话顺序，上下文推断（人称代词等）全错。
+
+    band 未指定时取本页所有框高度的中位数——漫画气泡大小差异很大，写死一个像素常数
+    对小字页/大字页两头不讨好。
+    """
+    if not regions:
+        return []
+    if band is None:
+        heights = sorted(r.bbox[3] for r in regions)
+        band = heights[len(heights) // 2]
+    band = max(1, band)
+
+    def sort_key(r: Region):
+        row = r.bbox[1] // band
+        x = -r.bbox[0] if rtl else r.bbox[0]
+        return (row, x)
+
+    return sorted(regions, key=sort_key)
+
+
 class ComicDetector:
     def __init__(self, repo: str, device: str = "cuda", threshold: float = 0.3):
         from transformers import AutoImageProcessor, RTDetrV2ForObjectDetection
