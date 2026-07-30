@@ -56,14 +56,17 @@ def _line_advance(font) -> float:
     return font.size * 1.35
 
 
-def _wrap_horizontal(draw, text: str, font, max_w: int) -> list[str]:
+def wrap_by_width(text: str, measure, max_w: float) -> list[str]:
+    """按宽度贪心换行。measure(s) 返回字符串 s 的度量宽度——依赖注入使其不依赖 PIL，
+    测试可以直接传 len 验证逻辑，不需要加载字体文件。
+    """
     lines, cur = [], ""
     for ch in text:
         if ch == "\n":
             lines.append(cur)
             cur = ""
             continue
-        if cur and draw.textlength(cur + ch, font=font) > max_w:
+        if cur and measure(cur + ch) > max_w:
             lines.append(cur)
             cur = ch
         else:
@@ -71,6 +74,85 @@ def _wrap_horizontal(draw, text: str, font, max_w: int) -> list[str]:
     if cur:
         lines.append(cur)
     return lines
+
+
+def _wrap_horizontal(draw, text: str, font, max_w: int) -> list[str]:
+    return wrap_by_width(text, lambda s: draw.textlength(s, font=font), max_w)
+
+
+# 行首禁则：这些字符不能出现在一行的开头（收尾类标点，前面必须有内容跟着）
+NOT_LINE_START = "，。、；：？！）］｝〉》」』】’”·…—～%"
+# 行尾禁则：这些字符不能出现在一行的结尾（起始类标点，后面必须有内容跟着）
+NOT_LINE_END = "（［｛〈《「『【‘“"
+
+
+def apply_kinsoku(lines: list[str], measure, max_w: float) -> list[str]:
+    """禁则处理：不产生"行首是句号/顿号"或"行尾是左括号"这类断行。
+
+    只用"下移末字"（把上一行最后一个字挪到下一行开头，把违规标点顶到下一行的第二个
+    字符位置）不用"上提首字"（把违规标点拉回上一行末尾）——前者只会让"送出方"（上一行）
+    变短，绝不会让它超宽；后者会让上一行变长，可能反而超宽。
+
+    但"接收方"（下一行）会因为多了一个字符而变长——这一侧必须显式检查 measure(...) <=
+    max_w，否则会把"违规标点"问题换成"文字溢出边框"问题，视觉上更差（曾实测复现：
+    "很" 被下移后使接收行超出气泡框，画面上文字直接越界）。测不出还超宽就放弃这一步，
+    宁可保留原始的禁则违规，不产生溢出。
+
+    最多迭代 3 轮防止相邻两行来回振荡；任何一步会把某一行掏空（只剩 1 字还要继续挪）
+    就整体放弃，返回原始 lines，因为这说明这几行本来就挤得没有调整空间。
+    """
+    if len(lines) < 2:
+        return list(lines)
+    working = list(lines)
+    for _ in range(3):
+        changed = False
+        for i in range(1, len(working)):
+            while (
+                working[i]
+                and working[i][0] in NOT_LINE_START
+                and len(working[i - 1]) > 1
+                and measure(working[i - 1][-1] + working[i]) <= max_w
+            ):
+                moved, working[i - 1] = working[i - 1][-1], working[i - 1][:-1]
+                working[i] = moved + working[i]
+                changed = True
+            while (
+                working[i - 1]
+                and working[i - 1][-1] in NOT_LINE_END
+                and len(working[i - 1]) > 1
+                and measure(working[i - 1][-1] + working[i]) <= max_w
+            ):
+                moved, working[i - 1] = working[i - 1][-1], working[i - 1][:-1]
+                working[i] = moved + working[i]
+                changed = True
+        if not changed:
+            break
+    if any(not ln for ln in working):
+        return list(lines)
+    return working
+
+
+def balance_lines(text: str, measure, max_w: float) -> list[str]:
+    """行平衡：贪心换行常在最后一行留下 1~2 个字的孤字行；用比 max_w 更窄的宽度重排，
+    只要仍能排成同样的行数，前面的行就会主动少装一点，把孤字分摊回去。
+
+    二分查找仍能保持行数不变的最小宽度。行数随宽度减小单调不减，可以二分。
+    """
+    baseline = wrap_by_width(text, measure, max_w)
+    n = len(baseline)
+    if n <= 1:
+        return baseline
+    lo, hi = 1.0, float(max_w)
+    best = baseline
+    for _ in range(16):
+        mid = (lo + hi) / 2
+        candidate = wrap_by_width(text, measure, mid)
+        if len(candidate) == n:
+            best = candidate
+            hi = mid
+        else:
+            lo = mid
+    return best
 
 
 def _fits(draw, text: str, font, bw: int, bh: int, direction: str, sw: int = 0) -> bool:
@@ -141,7 +223,9 @@ def render_page(image: Image.Image, regions: list[Region], cfg: Config) -> Image
 
 def _draw_horizontal(draw, text, font, bx, by, bw, bh, color, stroke, sw):
     eff_bw = max(1, bw - 2 * sw)
-    lines = _wrap_horizontal(draw, text, font, eff_bw)
+    measure = lambda s: draw.textlength(s, font=font)
+    lines = balance_lines(text, measure, eff_bw)
+    lines = apply_kinsoku(lines, measure, eff_bw)
     lh = _line_advance(font)
     cy = by + max(0.0, (bh - lh * len(lines)) / 2)
     cx = bx + bw / 2
