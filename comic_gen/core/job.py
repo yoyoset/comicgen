@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from .models import STATUS_RENDERED
+from .utils import load_json, save_json
 
 JobStatus = Literal["ok", "partial", "failed", "cancelled"]
 
@@ -137,3 +138,26 @@ def read_original_input(pages_json_path: Path) -> str | None:
         return data.get("input")
     except Exception:
         return None
+
+
+def load_pages(pages_json_path: Path) -> tuple[list, str | None]:
+    """读 pages.json，返回 (Page 列表, 记录的原始输入指纹)。
+
+    校对会话（app/review_session.py）用这个直接把 pages.json 读成可编辑的对象，
+    不必像 Runner._load_pages 那样先知道当前输入路径才能做指纹校验——校对场景
+    信任磁盘上已有的 pages.json，本来就是要打开它编辑，不存在"指纹不符就丢弃缓存"
+    这个问题。
+    """
+    from .models import Page
+
+    data = load_json(pages_json_path)
+    pages = [Page.from_dict(p) for p in data.get("pages", [])]
+    return pages, data.get("input")
+
+
+def save_pages(pages_json_path: Path, pages: list, input_fingerprint: str | None) -> None:
+    """写 pages.json，格式与 Runner._save_pages 保持一致，两边可以互相读写同一份文件。"""
+    data = {"pages": [p.to_dict() for p in pages]}
+    if input_fingerprint:
+        data["input"] = input_fingerprint
+    save_json(data, pages_json_path)

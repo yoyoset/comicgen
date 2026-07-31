@@ -43,6 +43,25 @@ def select_drawable_regions(regions: list) -> list:
     return [r for r in regions if r.source_text.strip() and r.translated_text.strip()]
 
 
+def render_single_page(img: Image.Image, page: Page, cfg: Config, inpainter, log=None) -> Image.Image:
+    """跑一页的抹字+渲染，返回处理后的图。只做图像处理，不落盘、不改 page.status——
+    调用方决定存到哪、什么时候存。
+
+    从 Runner._run_body 的渲染阶段循环体里抽出来，供两处复用：批量渲染循环（本文件）
+    和校对会话的单页重渲染（app/review_session.py）——校对界面改完一个气泡的译文后，
+    用户要能立刻看到这一页的效果，不需要（也不该）把其它页跟着重新抹字渲染一遍。
+    """
+    from .render import render_page
+
+    drawable = select_drawable_regions(page.regions)
+    total_text = sum(1 for r in page.regions if r.source_text.strip())
+    skipped = total_text - len(drawable)
+    if skipped and log is not None:
+        log(f"[警告] {page.image} 有 {skipped} 处区域未获得译文，保留原文不抹除")
+    cleaned = inpainter.inpaint_page(img, drawable)
+    return render_page(cleaned, drawable, cfg)
+
+
 class Runner:
     def __init__(self, cfg: Config | None = None, log=print):
         self.cfg = cfg or Config()
@@ -367,22 +386,13 @@ class Runner:
         todo = [p for p in pages if p.status == STATUS_TRANSLATED]
         if todo:
             stage_start = time.monotonic()
-            from .render import render_page
-
             inpainter = self._get_inpainter()
             for i, p in enumerate(todo):
                 if cancelled():
                     self.log("已停止（渲染阶段）")
                     return JobReport.cancelled(pages, output_path)
                 try:
-                    img = open_page(p)
-                    drawable = select_drawable_regions(p.regions)
-                    total_text = sum(1 for r in p.regions if r.source_text.strip())
-                    skipped = total_text - len(drawable)
-                    if skipped:
-                        self.log(f"[警告] {p.image} 有 {skipped} 处区域未获得译文，保留原文不抹除")
-                    cleaned = inpainter.inpaint_page(img, drawable)
-                    out_img = render_page(cleaned, drawable, self.cfg)
+                    out_img = render_single_page(open_page(p), p, self.cfg, inpainter, log=self.log)
                     out_path = trans_dir / p.image
                     ensure_dir(out_path.parent)
                     out_img.save(out_path)
