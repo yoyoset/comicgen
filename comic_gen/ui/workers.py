@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import traceback
 
 from PySide6 import QtCore
@@ -10,6 +11,38 @@ from ..core.errors import ComicGenError, format_job_failure  # noqa: F401 (re-ex
 from ..core.job import JobRequest
 from ..core.manifest import MODEL_MANIFEST
 from ..core.settings import AppSettings
+
+# Runner._progress 按阶段回调，之前 UI 直接拿 i/total 当整体进度——四个阶段各自把
+# 进度条从 0 填到 100%，用户体感是"一轮任务进度条填满四次"，而不是一次跑完整个任务。
+_STAGE_ORDER = ["detect", "ocr", "translate", "render"]
+_STAGE_LABELS = {"detect": "检测", "ocr": "OCR识别", "translate": "翻译", "render": "抹字渲染"}
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}秒"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}分钟"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}小时{minutes}分钟"
+
+
+def overall_progress(stage: str, i: int, total: int, elapsed_s: float) -> tuple[float, str]:
+    """把"当前阶段内的 i/total"换算成跨四阶段单调递增的总进度 + 粗略 ETA。
+
+    纯函数：不碰 Qt/Runner，方便离线测试。ETA 用"目前为止的平均速度直接线性外推"，
+    未就绪的前几个百分点（fraction 太小）估算噪声太大，不显示。
+    """
+    stage_idx = _STAGE_ORDER.index(stage) if stage in _STAGE_ORDER else 0
+    stage_fraction = i / max(1, total)
+    fraction = (stage_idx + stage_fraction) / len(_STAGE_ORDER)
+    desc = f"{_STAGE_LABELS.get(stage, stage)} {i}/{total}"
+    if fraction > 0.02 and elapsed_s > 1:
+        remaining_s = elapsed_s * (1 - fraction) / fraction
+        desc += f"　预计剩余 {_format_duration(remaining_s)}"
+    return fraction, desc
 
 
 class PipelineWorker(QtCore.QObject):
@@ -29,8 +62,11 @@ class PipelineWorker(QtCore.QObject):
     @QtCore.Slot()
     def run(self):
         try:
+            start = time.monotonic()
+
             def cb(i, total, stage):
-                self.progress.emit(i / max(1, total), f"{stage} {i}/{total}")
+                fraction, desc = overall_progress(stage, i, total, time.monotonic() - start)
+                self.progress.emit(fraction, desc)
 
             def lcb(i, n):
                 self.loadProgress.emit(i, n)

@@ -288,7 +288,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_lbl.setText(desc)
 
     def _on_load_progress(self, i: int, n: int):
+        # 文档加载阶段（如 PDF 逐页光栅化）之前只写状态栏文字，进度条停在 0——
+        # 200 页的 PDF 这一步本身就要花不少时间，看起来像卡死了。
         self.status_lbl.setText(f"读取文档 {i}/{n} 页")
+        self.status_progress.setValue(int(i / max(1, n) * 100))
 
     def _on_job_finished(self, result):
         # 记录刚提交的请求（若成功/部分成功），供"重渲染"快路径复用；必须用当初实际提交的
