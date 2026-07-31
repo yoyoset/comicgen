@@ -7,6 +7,7 @@ from PIL import Image
 from ..core.config import Config
 from ..core.errors import ModelError
 from ..core.models import Region
+from ..infra.logging import logger
 
 # EasyOCR 对每个识别片段都会给一个置信度分数，原实现完全丢弃了它，装饰性花纹/logo
 # 被幻觉成的乱码片段会和真文字原样拼在一起。0.3 是一个保守的起点阈值（不是从真实
@@ -64,6 +65,5 @@ class OcrEngine:
                     res = self._easy.readtext(np.array(crop))
                     r.source_text = assemble_easyocr_text(res)
             except Exception as e:
-                import sys
-                print(f"[OCR 区域异常] bbox={r.bbox}: {e}", file=sys.stderr)
+                logger.warning("OCR 区域异常 bbox=%s: %s", r.bbox, e)
                 r.source_text = ""

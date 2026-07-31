@@ -1,13 +1,13 @@
 """译文渲染：横排/竖排，字号自适应收缩防溢出，居中，自动描边。"""
 from __future__ import annotations
 
-import sys
 from functools import lru_cache
 
 from PIL import Image, ImageDraw, ImageFont
 
 from ..core.config import Config
 from ..core.models import DIRECTION_HORIZONTAL, DIRECTION_VERTICAL, Region
+from ..infra.logging import logger
 
 _COL_GAP = 1.35   # 竖排列距倍数
 
@@ -208,10 +208,9 @@ def render_page(image: Image.Image, regions: list[Region], cfg: Config) -> Image
         color = tuple(r.color) if r.color else (0, 0, 0)
         font, sw, fits = _pick_size(draw, text, bw, bh, direction, cfg, color)
         if not fits:
-            print(
-                f"[渲染] 区域 bbox={r.bbox} 文字在最小字号 {cfg.min_font_size} 下仍超出边框，"
-                "可能显示不全",
-                file=sys.stderr,
+            logger.warning(
+                "区域 bbox=%s 文字在最小字号 %s 下仍超出边框，可能显示不全",
+                r.bbox, cfg.min_font_size,
             )
         stroke = (0, 0, 0)
         if direction == DIRECTION_VERTICAL:

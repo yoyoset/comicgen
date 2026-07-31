@@ -5,12 +5,12 @@
 from __future__ import annotations
 
 import re
-import sys
 
 from ..core.config import Config
 from ..core.errors import InputError, ModelError
 from ..core.manifest import MODEL_MANIFEST
 from ..core.model_locator import STATUS_PATH_BROKEN, STATUS_SIZE_MISMATCH, resolve_status
+from ..infra.logging import logger
 
 _LANG_NAMES = {"ja": "日文", "en": "英文", "zh": "中文", "other": "原文语言"}
 
@@ -41,10 +41,7 @@ class BaseTranslator:
         )
         result = self._parse_numbered(call_llm(prompt), len(texts))
         if result is None:
-            print(
-                f"[翻译] 整页编号解析失败（编号缺失/重复/多出），回退逐条翻译（{self.name}）",
-                file=sys.stderr,
-            )
+            logger.warning("整页编号解析失败（编号缺失/重复/多出），回退逐条翻译（%s）", self.name)
             result = [call_llm(self._single_prompt(texts, i, cfg)) for i in range(len(texts))]
         return result
 
@@ -133,7 +130,7 @@ class _LlamaGGUFTranslator(BaseTranslator):
         spec = MODEL_MANIFEST[self.name]
         st = resolve_status(self.name, bindings=cfg.model_paths)
         if st.is_ready:
-            print(f"[翻译模型] 使用：{st.path}", file=sys.stderr)
+            logger.info("翻译模型使用：%s", st.path)
             return str(st.path)
         if st.state == STATUS_PATH_BROKEN:
             raise ModelError(
@@ -160,7 +157,7 @@ class _LlamaGGUFTranslator(BaseTranslator):
                         break
                 else:
                     name = files[0]
-            print(f"[翻译模型] 本地未找到 {name}，从 {spec.repo} 下载…", file=sys.stderr)
+            logger.info("翻译模型本地未找到 %s，从 %s 下载…", name, spec.repo)
             return hf_hub_download(spec.repo, name)
         except Exception as e:
             raise ModelError(

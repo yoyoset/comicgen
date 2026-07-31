@@ -184,6 +184,26 @@ class Runner:
 
         self._go_offline_if_ready()
         work_dir = Path(work_dir_override) if work_dir_override else self._work_dir(input_path, output_path)
+
+        # 叶子模块（ocr/translate/render）里用 logging.getLogger(__name__) 记的警告/
+        # 提示，之前各自 print(file=sys.stderr)，到不了 UI 日志面板。这里把它们桥接
+        # 到 self.log（Runner 自己的调用点、UI 已经接好线的那个回调），并额外挂一份
+        # 带时间戳的 <work_dir>/run.log。只在 run() 执行期间挂着，跑完就卸载——
+        # 不想让测试里构造几十个 Runner() 都各自往同一个模块级 logger 上堆 handler。
+        from ..infra.logging import attach_callback_handler, attach_job_file_handler, detach_handler
+
+        cb_handler = attach_callback_handler(lambda msg: self.log(msg))
+        file_handler = attach_job_file_handler(work_dir)
+        try:
+            return self._run_body(
+                input_path, output_path, work_dir, progress, rerender, load_cb, should_cancel
+            )
+        finally:
+            detach_handler(cb_handler)
+            detach_handler(file_handler)
+
+    def _run_body(self, input_path: Path, output_path, work_dir: Path, progress, rerender: bool,
+                   load_cb, should_cancel: Callable[[], bool] | None) -> JobReport:
         extract_dir = work_dir / "_extract"
         if extract_dir.exists():  # 清空旧解包，防止不同输入互相污染
             shutil.rmtree(extract_dir)

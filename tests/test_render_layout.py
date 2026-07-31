@@ -104,26 +104,31 @@ def test_render_page_multiline_no_overlap():
     assert all(g >= 0 for g in gaps)
 
 
-def test_render_page_overflow_warning_printed(capsys):
-    """极端情况（框极小、文字极长）缩到 min_font_size 仍放不下时要打印警告，不静默溢出。"""
+def test_render_page_overflow_warning_logged(caplog):
+    """极端情况（框极小、文字极长）缩到 min_font_size 仍放不下时要记警告，不静默溢出。
+
+    render.py 现在走 infra.logging 的 logger（之前是 print(file=sys.stderr)，到不了
+    UI 日志面板）；caplog.at_level 直接挂在 "comic_gen" 这个具名 logger 上，不依赖
+    向 root 传播（infra/logging.py 里特意设了 propagate=False）。
+    """
     cfg = Config(min_font_size=10, max_font_size=48)
     img = Image.new("RGB", (500, 500), "white")
     regions = [Region(bbox=[0, 0, 15, 15], direction="horizontal",
                        translated_text="这是一段完全不可能塞进这么小框里的长文字内容",
                        color=[0, 0, 0])]
-    render_page(img, regions, cfg)
-    captured = capsys.readouterr()
-    assert "仍超出边框" in captured.err
+    with caplog.at_level("WARNING", logger="comic_gen"):
+        render_page(img, regions, cfg)
+    assert any("仍超出边框" in r.message for r in caplog.records)
 
 
-def test_render_page_fitting_text_no_warning(capsys):
+def test_render_page_fitting_text_no_warning(caplog):
     cfg = Config()
     img = Image.new("RGB", (300, 300), "white")
     regions = [Region(bbox=[10, 10, 280, 280], direction="horizontal",
                        translated_text="短文字", color=[0, 0, 0])]
-    render_page(img, regions, cfg)
-    captured = capsys.readouterr()
-    assert captured.err == ""
+    with caplog.at_level("WARNING", logger="comic_gen"):
+        render_page(img, regions, cfg)
+    assert caplog.records == []
 
 
 def test_load_font_is_cached():

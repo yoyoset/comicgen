@@ -359,3 +359,82 @@ def test_run_clears_page_error_on_later_success(tmp_path, monkeypatch):
     pages_data = json.loads((output_dir / "pages.json").read_text(encoding="utf-8"))
     assert pages_data["pages"][0]["error"] == ""
     assert pages_data["pages"][0]["status"] in ("translated", "rendered")
+
+
+# ---------------------------------------------------------------- infra.logging 桥接
+
+
+def test_run_bridges_leaf_module_logging_to_self_log_and_run_log_file(tmp_path, monkeypatch):
+    """2.2 回归测试：叶子模块（ocr/translate/render）用 logging.getLogger(__name__)
+    记的消息，之前各自 print(file=sys.stderr)，到不了 UI 日志面板也没有落盘。
+    这里模拟一个"叶子模块"在 OCR 阶段调用 comic_gen 这棵 logger，验证 run() 期间
+    这条记录会被转发到 self.log（UI 面板走这个）、也会写进 <work_dir>/run.log。
+    """
+    import comic_gen.pipeline.detect as detect_mod
+    import comic_gen.pipeline.inpaint as inpaint_mod
+    import comic_gen.pipeline.ocr as ocr_mod
+    import comic_gen.pipeline.render as render_mod
+    from comic_gen.infra.logging import logger as pipeline_logger
+
+    class FakeDetector:
+        def __init__(self, *a, **k):
+            pass
+
+        def detect(self, image):
+            return [Region(bbox=[0, 0, 10, 10], direction="horizontal")]
+
+    class FakeOcrWithLogging:
+        def __init__(self, *a, **k):
+            pass
+
+        def recognize_regions(self, image, regions):
+            pipeline_logger.warning("模拟叶子模块警告：装饰性花纹被识别成文字")
+            for r in regions:
+                r.source_text = "テスト"
+
+    class FakeInpainter:
+        def __init__(self, *a, **k):
+            pass
+
+        def inpaint_page(self, image, regions):
+            return image.copy()
+
+    def fake_render_page(image, regions, cfg):
+        return image.copy()
+
+    monkeypatch.setattr(detect_mod, "ComicDetector", FakeDetector)
+    monkeypatch.setattr(ocr_mod, "OcrEngine", FakeOcrWithLogging)
+    monkeypatch.setattr(inpaint_mod, "Inpainter", FakeInpainter)
+    monkeypatch.setattr(render_mod, "render_page", fake_render_page)
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    Image.new("RGB", (20, 20), "white").save(input_dir / "page_0.png")
+    output_dir = tmp_path / "output"
+
+    collected_logs = []
+    cfg = Config(translator="mock", source_lang="ja")
+    runner = Runner(cfg, log=collected_logs.append)
+    runner.run(str(input_dir), str(output_dir))
+
+    assert any("装饰性花纹" in m for m in collected_logs)
+
+    run_log_content = (output_dir / "run.log").read_text(encoding="utf-8")
+    assert "装饰性花纹" in run_log_content
+    assert "[WARNING]" in run_log_content
+
+
+def test_run_detaches_logging_handlers_after_completion(tmp_path, monkeypatch):
+    """跑完之后不应该在 comic_gen 这棵 logger 上留下 handler——不然构造/跑很多个
+    Runner（测试套件里就是这样）会不断堆积，同一条日志被转发好几遍。
+    """
+    from comic_gen.infra.logging import logger as pipeline_logger
+
+    _make_fake_pipeline(monkeypatch)
+    input_dir = _make_input_folder(tmp_path, n=1)
+    output_dir = tmp_path / "output"
+
+    before = len(pipeline_logger.handlers)
+    cfg = Config(translator="mock", source_lang="ja")
+    Runner(cfg).run(str(input_dir), str(output_dir))
+    assert len(pipeline_logger.handlers) == before
