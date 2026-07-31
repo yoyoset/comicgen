@@ -5,6 +5,7 @@
 现在按真实行为重写。
 """
 from comic_gen.core.config import Config
+from comic_gen.core.errors import InputError
 from comic_gen.pipeline.translate import (
     BaseTranslator,
     MockTranslator,
@@ -31,10 +32,10 @@ def test_get_translator_mock_needs_no_model():
 def test_get_translator_unknown_engine():
     try:
         get_translator(Config(translator="nope"))
-    except ValueError as e:
+    except InputError as e:
         assert "nope" in str(e)
     else:
-        raise AssertionError("未知引擎应该抛 ValueError")
+        raise AssertionError("未知引擎应该抛 InputError")
 
 
 def test_parse_numbered_basic():

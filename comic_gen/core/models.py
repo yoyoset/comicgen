@@ -41,6 +41,10 @@ class Page:
     regions: list[Region] = field(default_factory=list)
     status: str = STATUS_PENDING
     error: str = ""
+    # 失败发生在哪个阶段（core.errors.Stage 的字符串值）。之前 JobReport 靠切开 error
+    # 的中文消息找冒号猜阶段，脆且间接；这个字段由 runner 在对应阶段的 except 里直接写，
+    # 不用猜。旧 pages.json 没有这个字段，默认空串，JobReport 那边有兜底逻辑。
+    error_stage: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)

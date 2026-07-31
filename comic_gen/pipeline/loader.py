@@ -10,6 +10,7 @@ from urllib.parse import unquote
 from xml.etree import ElementTree as ET
 
 from ..core.environment import find_unrar
+from ..core.errors import InputError
 from ..core.utils import ensure_dir, is_image, list_images, natural_key
 
 
@@ -38,7 +39,7 @@ def load_input(input_path: str | Path, extract_dir: str | Path, cfg=None, load_c
         return _load_epub(p, Path(extract_dir))
     if suffix == ".pdf":
         return _load_pdf(p, Path(extract_dir), getattr(cfg, "pdf_dpi", 150), load_cb)
-    raise ValueError(f"不支持的输入类型: {p}（支持 文件夹 / ZIP / CBZ / RAR / CBR / EPUB / PDF）")
+    raise InputError(f"不支持的输入类型: {p}（支持 文件夹 / ZIP / CBZ / RAR / CBR / EPUB / PDF）")
 
 
 # ---------------------------------------------------------------- 输入
@@ -46,7 +47,7 @@ def load_input(input_path: str | Path, extract_dir: str | Path, cfg=None, load_c
 def _load_folder(p: Path) -> LoadedInput:
     pages = list_images(p, recursive=True)
     if not pages:
-        raise ValueError(f"文件夹中没有图片: {p}")
+        raise InputError(f"文件夹中没有图片: {p}")
     return LoadedInput("folder", p, p, pages, [str(pg.relative_to(p)).replace("\\", "/") for pg in pages])
 
 
@@ -64,7 +65,7 @@ def _load_zip(p: Path, out: Path) -> LoadedInput:
         key=lambda f: natural_key(str(f.relative_to(src))),
     )
     if not pages:
-        raise ValueError(f"压缩包中没有图片: {p}")
+        raise InputError(f"压缩包中没有图片: {p}")
     rel = [str(f.relative_to(src)).replace("\\", "/") for f in pages]
     return LoadedInput("zip", p, src, pages, rel)
 
@@ -74,7 +75,7 @@ def _load_rar(p: Path, out: Path) -> LoadedInput:
     try:
         import rarfile
     except ImportError as e:
-        raise ImportError("打开 RAR/CBR 需要 rarfile：pip install rarfile") from e
+        raise InputError("打开 RAR/CBR 需要 rarfile：pip install rarfile") from e
     # 本机常见 WinRAR 安装位置兜底（单一来源：core.environment.UNRAR_CANDIDATES）
     unrar = find_unrar()
     if unrar:
@@ -84,13 +85,13 @@ def _load_rar(p: Path, out: Path) -> LoadedInput:
         with rarfile.RarFile(p) as rf:
             rf.extractall(src)
     except Exception as e:
-        raise ValueError(f"RAR/CBR 解压失败（请确认已安装 WinRAR 或 UnRAR）：{e}") from e
+        raise InputError(f"RAR/CBR 解压失败（请确认已安装 WinRAR 或 UnRAR）：{e}") from e
     pages = sorted(
         (f for f in src.rglob("*") if f.is_file() and is_image(f)),
         key=lambda f: natural_key(str(f.relative_to(src))),
     )
     if not pages:
-        raise ValueError(f"压缩包中没有图片: {p}")
+        raise InputError(f"压缩包中没有图片: {p}")
     rel = [str(f.relative_to(src)).replace("\\", "/") for f in pages]
     return LoadedInput("zip", p, src, pages, rel)  # 输出按 zip/CBZ 处理
 
@@ -100,7 +101,7 @@ def _load_pdf(p: Path, out: Path, dpi: int = 200, load_cb=None) -> LoadedInput:
     try:
         import fitz  # PyMuPDF
     except ImportError as e:
-        raise ImportError("打开 PDF 需要 PyMuPDF：pip install pymupdf") from e
+        raise InputError("打开 PDF 需要 PyMuPDF：pip install pymupdf") from e
     src = ensure_dir(out / "src")
     pages: list[Path] = []
     with fitz.open(p) as doc:
@@ -118,7 +119,7 @@ def _load_pdf(p: Path, out: Path, dpi: int = 200, load_cb=None) -> LoadedInput:
                 except Exception:
                     pass
     if not pages:
-        raise ValueError(f"PDF 中没有可渲染页面: {p}")
+        raise InputError(f"PDF 中没有可渲染页面: {p}")
     rel = [pg.name for pg in pages]
     return LoadedInput("pdf", p, src, pages, rel)
 
@@ -134,7 +135,7 @@ def _load_epub(p: Path, out: Path) -> LoadedInput:
     if not names:  # 兜底：全部图片自然排序
         names = sorted(image_map, key=natural_key)
     if not names:
-        raise ValueError(f"EPUB 中没有图片: {p}")
+        raise InputError(f"EPUB 中没有图片: {p}")
     return LoadedInput("epub", p, src, [image_map[n] for n in names], names)
 
 

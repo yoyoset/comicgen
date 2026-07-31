@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 
 from ..core.config import Config
+from ..core.errors import ModelError
 from ..core.models import Region
 
 # EasyOCR 对每个识别片段都会给一个置信度分数，原实现完全丢弃了它，装饰性花纹/logo
@@ -39,8 +40,9 @@ class OcrEngine:
                 import easyocr
                 import torch
             except ImportError as e:
-                raise ImportError(
-                    "非日文 OCR 需要 easyocr，请运行: .\\.venv\\Scripts\\python.exe -m pip install easyocr"
+                raise ModelError(
+                    "非日文 OCR 需要 easyocr，请运行: .\\.venv\\Scripts\\python.exe -m pip install easyocr",
+                    technical=str(e),
                 ) from e
             code = {"en": ["en"], "zh": ["ch_sim", "en"]}.get(self.lang, ["en"])
             storage_dir = cfg.model_paths.get("ocr_other")

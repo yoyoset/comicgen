@@ -4,6 +4,7 @@ import pytest
 from pathlib import Path
 import tempfile
 from PIL import Image
+from comic_gen.core.errors import OutputError
 from comic_gen.core.models import Region
 from comic_gen.pipeline.runner import Runner, select_drawable_regions
 from comic_gen.core.config import Config
@@ -18,7 +19,7 @@ def test_check_output_safe_same_path():
         input_path = Path(tmpdir) / "input.zip"
         output_path = Path(tmpdir) / "input.zip"
 
-        with pytest.raises(ValueError, match="覆盖原图"):
+        with pytest.raises(OutputError, match="覆盖原图"):
             runner._check_output_safe(input_path, output_path)
 
 
@@ -32,7 +33,7 @@ def test_check_output_safe_output_in_input():
         input_dir.mkdir()
         output_path = input_dir / "output.zip"
 
-        with pytest.raises(ValueError, match="输出目录位于输入目录内"):
+        with pytest.raises(OutputError, match="输出目录位于输入目录内"):
             runner._check_output_safe(input_dir, output_path)
 
 
@@ -75,7 +76,7 @@ def test_check_output_safe_fails_closed_on_resolve_error():
         def resolve(self):
             raise OSError("模拟路径解析失败")
 
-    with pytest.raises(ValueError, match="无法校验输出路径是否安全"):
+    with pytest.raises(OutputError, match="无法校验输出路径是否安全"):
         Runner._check_output_safe(BoomPath(), Path("/tmp/whatever"))
 
 
@@ -97,7 +98,7 @@ def test_run_rejects_conflicting_output_before_any_extraction(tmp_path, monkeypa
     (input_dir / "a.png").touch()
 
     runner = Runner(Config())
-    with pytest.raises(ValueError, match="覆盖原图"):
+    with pytest.raises(OutputError, match="覆盖原图"):
         runner.run(str(input_dir), str(input_dir))  # 输出 == 输入
 
 

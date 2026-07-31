@@ -8,6 +8,7 @@ import re
 import sys
 
 from ..core.config import Config
+from ..core.errors import InputError, ModelError
 from ..core.manifest import MODEL_MANIFEST
 from ..core.model_locator import STATUS_PATH_BROKEN, STATUS_SIZE_MISMATCH, resolve_status
 
@@ -111,9 +112,10 @@ class _LlamaGGUFTranslator(BaseTranslator):
         try:
             from llama_cpp import Llama
         except (ImportError, RuntimeError) as e:
-            raise ImportError(
+            raise ModelError(
                 f"未安装 GPU 版 llama-cpp-python 或 CUDA 运行时缺失，无法使用本地 {self.name} 引擎。"
-                "安装见 README。"
+                "安装见 README。",
+                technical=str(e),
             ) from e
 
         path = self._resolve_model_path(cfg)
@@ -134,12 +136,12 @@ class _LlamaGGUFTranslator(BaseTranslator):
             print(f"[翻译模型] 使用：{st.path}", file=sys.stderr)
             return str(st.path)
         if st.state == STATUS_PATH_BROKEN:
-            raise RuntimeError(
+            raise ModelError(
                 f"设置里绑定的{spec.label}文件已找不到：{st.path}\n"
                 f"请到「模型管理」页重新定位，或清除这条绑定。"
             )
         if st.state == STATUS_SIZE_MISMATCH:
-            raise RuntimeError(
+            raise ModelError(
                 f"{spec.label}文件大小异常（期望 {st.expected_size} 字节，实际 {st.size} 字节），"
                 f"可能下载不完整。请到「模型管理」页重新下载。"
             )
@@ -161,9 +163,10 @@ class _LlamaGGUFTranslator(BaseTranslator):
             print(f"[翻译模型] 本地未找到 {name}，从 {spec.repo} 下载…", file=sys.stderr)
             return hf_hub_download(spec.repo, name)
         except Exception as e:
-            raise RuntimeError(
+            raise ModelError(
                 f"本地未找到{spec.label}（{name or spec.repo}），联网下载也失败：{e}\n"
-                f"可在「模型管理」页把「模型目录」指向已有权重所在目录，或直接指定文件路径。"
+                f"可在「模型管理」页把「模型目录」指向已有权重所在目录，或直接指定文件路径。",
+                technical=str(e),
             ) from e
 
     def _call(self, prompt: str) -> str:
@@ -192,7 +195,7 @@ class SakuraTranslator(_LlamaGGUFTranslator):
 
     def __init__(self, cfg: Config):
         if cfg.source_lang != "ja":
-            raise ValueError("Sakura 为日文专用模型，源语言非日文请改用通用本地引擎（llm）")
+            raise InputError("Sakura 为日文专用模型，源语言非日文请改用通用本地引擎（llm）")
         super().__init__(cfg)
 
 
@@ -227,7 +230,7 @@ _TRANSLATORS = {
 def get_translator(cfg: Config) -> BaseTranslator:
     cls = _TRANSLATORS.get(cfg.translator)
     if cls is None:
-        raise ValueError(f"未知翻译引擎: {cfg.translator}")
+        raise InputError(f"未知翻译引擎: {cfg.translator}")
     if cls is MockTranslator:
         return cls()
     return cls(cfg)

@@ -81,6 +81,19 @@ def test_page_to_dict_roundtrip():
     assert page_restored.regions[0].source_text == "テスト"
 
 
+def test_page_error_stage_default_and_roundtrip():
+    page = Page(image="a.png", error="检测失败: x", error_stage="detect")
+    restored = Page.from_dict(page.to_dict())
+    assert restored.error_stage == "detect"
+
+
+def test_page_from_dict_without_error_stage_defaults_to_empty():
+    """读旧版 pages.json（没有 error_stage 字段）不应报错，回落默认空串。"""
+    old_dict = {"image": "a.png", "status": "pending", "error": "检测失败: x", "regions": []}
+    page = Page.from_dict(old_dict)
+    assert page.error_stage == ""
+
+
 def test_region_score_default_and_roundtrip():
     """score 默认 0.0；序列化往返保留精确值。"""
     r = Region(bbox=(0, 0, 10, 10))

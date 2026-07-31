@@ -29,8 +29,14 @@ class JobRequest:
 @dataclass
 class PageFailure:
     image: str
-    stage: str  # detect | ocr | translate | render
+    stage: str  # core.errors.Stage 的字符串值：detect | ocr | translate | render
     message: str
+
+
+def _legacy_stage_from_message(message: str) -> str:
+    """兼容没有 error_stage 字段的旧 pages.json：从"检测失败: xxx"这类固定格式的
+    中文消息里切出阶段短语。"""
+    return message.split(":", 1)[0].strip() if ":" in message else "未知阶段"
 
 
 @dataclass
@@ -45,14 +51,16 @@ class JobReport:
     def from_pages(cls, pages: list, output_path: Path | None) -> "JobReport":
         """从 Runner 跑完后的 Page 列表汇总结果。
 
-        Page.error 形如 "检测失败: xxx" / "OCR 失败: xxx" / "翻译失败: xxx" / "抹字渲染失败: xxx"，
-        取冒号前的中文短语作为 stage 标签（直接可读，无需再翻译成阶段名给用户看）。
+        阶段标签优先读 Page.error_stage——Runner 在对应阶段的 except 块里直接写入
+        （core.errors.Stage 的字符串值），不再靠切开中文错误消息猜阶段。旧版
+        pages.json 没有这个字段（读回来是空串）时，退回旧启发式："检测失败: xxx"
+        这类固定格式，取冒号前的中文短语，保证读旧数据不报错、不丢阶段信息。
         """
         total = len(pages)
         failures: list[PageFailure] = []
         for p in pages:
             if getattr(p, "error", None):
-                stage = p.error.split(":", 1)[0].strip() if ":" in p.error else "未知阶段"
+                stage = getattr(p, "error_stage", "") or _legacy_stage_from_message(p.error)
                 failures.append(PageFailure(image=p.image, stage=stage, message=p.error))
 
         if not failures:

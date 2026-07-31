@@ -5,9 +5,25 @@ import traceback
 
 from PySide6 import QtCore
 
+from ..core.errors import ComicGenError
 from ..core.job import JobRequest
 from ..core.manifest import MODEL_MANIFEST
 from ..core.settings import AppSettings
+
+
+def format_job_failure(e: Exception) -> str:
+    """异常 -> 要 emit 给 PipelineWorker.finished 信号的字符串。抽成纯函数，不用真的
+    跑一次 QThread 就能测。
+
+    ComicGenError 已经带了 pipeline 各层费心写好的人话文案（比如"设置里绑定的 X
+    文件已找不到，请到「模型管理」页重新定位"），之前不分青红皂白地把
+    traceback.format_exc() 糊在后面塞进模态框，这句话反而被埋在一堆 Python 堆栈
+    下面。其它未预期的异常仍然带全部 traceback——那类失败往往是真的程序 bug，
+    需要完整诊断信息，不能藏起来。
+    """
+    if isinstance(e, ComicGenError):
+        return f"失败：{e.user_message}"
+    return f"失败：{e}\n{traceback.format_exc()}"
 
 
 class PipelineWorker(QtCore.QObject):
@@ -46,8 +62,11 @@ class PipelineWorker(QtCore.QObject):
                     progress=cb, load_cb=lcb, should_cancel=self.cancel_event.is_set,
                 )
             self.finished.emit(report)
+        except ComicGenError as e:
+            self.runner.log(f"[失败] {e.technical}")  # 技术细节记日志，不丢
+            self.finished.emit(format_job_failure(e))
         except Exception as e:
-            self.finished.emit(f"失败：{e}\n{traceback.format_exc()}")
+            self.finished.emit(format_job_failure(e))
 
 
 class ModelWorker(QtCore.QObject):

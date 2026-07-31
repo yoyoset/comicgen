@@ -15,6 +15,7 @@ from typing import Callable
 from PIL import Image
 
 from ..core.config import Config
+from ..core.errors import OutputError, Stage
 from ..core.job import JobReport
 from ..core.models import (
     STATUS_DETECTED,
@@ -237,8 +238,10 @@ class Runner:
                     p.width, p.height = Image.open(page_img[p.image]).size
                     p.status = STATUS_DETECTED
                     p.error = ""
+                    p.error_stage = ""
                 except Exception as e:
                     p.error = f"检测失败: {e}"
+                    p.error_stage = Stage.DETECT.value
                     self.log(f"[警告] {p.image} 检测失败: {e}")
                 self._save_pages(work_dir, pages, input_path)
                 self._progress(progress, "detect", i + 1, len(todo))
@@ -255,8 +258,10 @@ class Runner:
                     ocr.recognize_regions(open_page(p), p.regions)
                     p.status = STATUS_OCRED
                     p.error = ""
+                    p.error_stage = ""
                 except Exception as e:
                     p.error = f"OCR 失败: {e}"
+                    p.error_stage = Stage.OCR.value
                     self.log(f"[警告] {p.image} OCR 失败: {e}")
                 self._save_pages(work_dir, pages, input_path)
                 self._progress(progress, "ocr", i + 1, len(todo))
@@ -279,12 +284,15 @@ class Runner:
                             r.translated_text = t
                         p.status = STATUS_TRANSLATED
                         p.error = ""
+                        p.error_stage = ""
                     except Exception as e:
                         p.error = f"翻译失败: {e}"
+                        p.error_stage = Stage.TRANSLATE.value
                         self.log(f"[警告] {p.image} 翻译失败: {e}")
                 else:
                     p.status = STATUS_TRANSLATED
                     p.error = ""
+                    p.error_stage = ""
                 # 翻译是四阶段里最贵的一步（LLM 推理，一页数秒到数十秒），之前这里的
                 # _save_pages 在循环外，只在整批翻完后落一次盘——崩溃/断电/强杀会丢掉
                 # 这一整批已经跑完的译文，重启后要全部重译。改成逐页落盘，和另外三个
@@ -316,8 +324,10 @@ class Runner:
                     out_img.save(out_path)
                     p.status = STATUS_RENDERED
                     p.error = ""
+                    p.error_stage = ""
                 except Exception as e:
                     p.error = f"抹字渲染失败: {e}"
+                    p.error_stage = Stage.RENDER.value
                     self.log(f"[警告] {p.image} 抹字渲染失败: {e}")
                 self._save_pages(work_dir, pages, input_path)
                 self._progress(progress, "render", i + 1, len(todo))
@@ -371,8 +381,10 @@ class Runner:
             ip = input_path.resolve()
             op = output_path.resolve()
         except Exception as e:
-            raise ValueError(f"无法校验输出路径是否安全（{e}），已阻止。请检查路径是否有效。") from e
+            raise OutputError(
+                f"无法校验输出路径是否安全（{e}），已阻止。请检查路径是否有效。", technical=str(e)
+            ) from e
         if op == ip:
-            raise ValueError("输出路径与输入相同，会覆盖原图，已阻止。请指定其它输出路径。")
+            raise OutputError("输出路径与输入相同，会覆盖原图，已阻止。请指定其它输出路径。")
         if input_path.is_dir() and ip in op.parents:
-            raise ValueError("输出目录位于输入目录内，可能污染/覆盖原图，已阻止。请指定输入目录外的路径。")
+            raise OutputError("输出目录位于输入目录内，可能污染/覆盖原图，已阻止。请指定输入目录外的路径。")
