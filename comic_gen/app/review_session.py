@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +22,22 @@ from ..infra.engine_cache import EngineCache
 # 检测置信度低于这个值时提示"需要注意"。纯展示阈值，不影响流水线的 suppress_overlaps
 # 判定——和 diagnose_page.py 里给用户看的诊断阈值同一个数量级，没有实测校准过。
 LOW_SCORE_THRESHOLD = 0.5
+
+
+def load_config_for_review(work_dir: str | Path, fallback: Config) -> Config:
+    """校对/单页重渲染要用产生这批结果时的原始配置（模型路径绑定、设备、字体、
+    检测阈值……），不是"现在设置页里恰好显示的值"——两者随时可能不一致（比如打开
+    一个不是本次应用会话跑出来的旧工作目录）。job.json（Phase 2.3）已经存了完整
+    快照，没有的话（旧数据/被删）才退回调用方传入的兜底值。
+    """
+    job_json = Path(work_dir) / "job.json"
+    if not job_json.exists():
+        return fallback
+    try:
+        data = json.loads(job_json.read_text(encoding="utf-8"))
+        return Config(**data["config"])
+    except Exception:
+        return fallback
 
 
 @dataclass

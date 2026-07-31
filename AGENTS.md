@@ -53,11 +53,13 @@ comic_gen/
 ├── app/         job_service.py（Qt-free 任务入口，`comicgen` CLI 用这个；
 │                UI 走 ui/job_controller.py 是因为需要跨任务复用 Runner 的引擎缓存，
 │                这里每次调用建一个新 Runner，跑完即弃，不是要取代那条路径）
+│                review_session.py（校对会话，Qt-free：读写 pages.json、
+│                「需要注意」区域列表、单页重渲染——不碰其它页、不重新打包最终产物）
 └── ui/
     ├── main_window.py   组合根：只接线，不含业务决策
     ├── job_controller.py 任务生命周期唯一归属（idle/running/cancelling）
-    ├── workers.py       QThread 工作对象（PipelineWorker/ModelWorker/ScanWorker）
-    └── views/           纯视图：translate/settings/model/diagnostics/first_run_dialog
+    ├── workers.py       QThread 工作对象（PipelineWorker/ModelWorker/ScanWorker/ReviewRerenderWorker）
+    └── views/           纯视图：translate/settings/model/diagnostics/first_run_dialog/review
 entry_ui.py      EXE 入口（绝对导入；不要直接用包内 app.py 当入口）
 build_exe.spec   PyInstaller 配置
 scripts/         自测素材生成 + build_exe.ps1（打包脚本，就地换件不碰用户数据）
@@ -83,6 +85,21 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 9. **模型目录不再有冻结态特殊默认值**：冻结/开发态都用 `core.paths.detect_default_model_dir()` 探测到的 HF 缓存根，由首次运行弹窗（`ui.views.first_run_dialog`）让用户确认或改到别处。**不要**再往 `_apply_default_model_dir_for_frozen` 这类"冻结时默认用 exe 同级目录"的逻辑上加代码——那是上一版备份/还原 hack 的根因，已经删掉。重新打包用 `scripts\build_exe.ps1`（只换 exe 本体 + `_internal\`），不要直接跑裸的 PyInstaller 命令，否则 `--clean` 会清空 `dist\comicgen\` 下的 `settings.json`。
 10. **UI 输出路径**：留空=输入同级 `_translated`；可手动指定避免上传 zip 落 temp。
 11. PowerShell 控制台 GBK 显示中文日志乱码是**显示问题**，日志本身 UTF-8 正常，不要为此改代码。
+12. **校对界面**（`ui/views/review_view.py` + `app/review_session.py`）：画布上的检测框直接可点，选中后侧栏
+    编辑译文；"应用译文"只改文字+存盘（快），"重渲染本页"才真的跑一次 LaMa 抹字+渲染（慢，GPU，在
+    `ReviewRerenderWorker` 的 QThread 里跑）。改译文会把该页状态从 `rendered` 打回 `translated`（和
+    `Runner.rerender` 语义一致），但**只影响这一页**，不会像"重渲染"整卷任务那样把其它已渲染页也标记
+    为待重渲染。`render_single_page`（`pipeline/runner.py`）是 Runner 批量渲染循环和这里单页重渲染共用的
+    同一份实现，不要各写一份。`ReviewSession` 构造时会用 `pages.json` 里记的原始输入路径重新解析一遍
+    原图位置（文件夹输入很便宜，压缩包/PDF 输入等价于重新解包一次），配置优先读 `job.json` 里的快照
+    而不是当前设置页的值（两者可能对不上——比如打开一个不是本次会话跑出来的旧工作目录）。
+    **`ui/views/review_view.py` 里 `show_page()` 必须先清空 `_region_items` 引用字典再调
+    `self.scene.clear()`**——反过来做会撞上一个实测复现过的真崩溃：`scene.clear()` 删除旧
+    `QGraphicsRectItem` 时会同步触发 `selectionChanged`，如果这时字典还指着刚被 C++ 层删除的对象，
+    信号处理器遍历它们会抛 `libshiboken` 的 "already deleted" `RuntimeError`。这个项目没有 UI 测试
+    基础设施（`QGraphicsScene`/`QGraphicsView` 这类对象图在 pytest 里反复构造/析构会真实触发
+    access violation 崩溃，试过），验证这类改动用一次性离屏脚本（`QT_QPA_PLATFORM=offscreen` 构造
+    真实 `MainWindow` 走一遍流程），不要往 `tests/` 里加构造 `QGraphicsScene` 的 pytest 用例。
 
 ## 已知待办 / 局限
 

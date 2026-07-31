@@ -172,6 +172,27 @@ class ModelWorker(QtCore.QObject):
             self.finished.emit("失败：" + str(e) + "\n" + traceback.format_exc())
 
 
+class ReviewRerenderWorker(QtCore.QObject):
+    """校对界面"重渲染本页"：真实跑一次 LaMa 抹字 + 渲染，GPU 推理不能放主线程，
+    否则点一下按钮界面就冻一次——和其它耗时操作（翻译任务/模型下载）同样的理由。
+    """
+
+    finished = QtCore.Signal(str, object)  # image, Path（成功）或 Exception（失败）
+
+    def __init__(self, session, image: str):
+        super().__init__()
+        self.session = session
+        self.image = image
+
+    @QtCore.Slot()
+    def run(self):
+        try:
+            path = self.session.rerender_page(self.image)
+            self.finished.emit(self.image, path)
+        except Exception as e:
+            self.finished.emit(self.image, e)
+
+
 class ScanWorker(QtCore.QObject):
     """在后台线程算全部 6 个模型的状态 + GGUF 查重，避免共享大目录（几十万文件）时卡 UI。"""
 

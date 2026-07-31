@@ -6,7 +6,9 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ..app.review_session import ReviewSession, load_config_for_review
 from ..core.environment import apply_model_dir, detect_environment
+from ..core.errors import ComicGenError, format_job_failure
 from ..core.job import JobReport, JobRequest, read_original_input, resolve_pages_json
 from ..core.manifest import MODEL_MANIFEST
 from ..core.settings import AppSettings
@@ -15,9 +17,10 @@ from .job_controller import STATE_RUNNING, JobController
 from .views.diagnostics_view import DiagnosticsView
 from .views.first_run_dialog import FirstRunDialog
 from .views.model_view import ModelView
+from .views.review_view import ReviewView
 from .views.settings_view import SettingsView
 from .views.translate_view import TranslateView
-from .workers import ModelWorker, ScanWorker
+from .workers import ModelWorker, ReviewRerenderWorker, ScanWorker
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -35,14 +38,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self._m_cancel_event: threading.Event | None = None
         self._s_thread: QtCore.QThread | None = None
         self._s_worker: ScanWorker | None = None
+        self._rv_thread: QtCore.QThread | None = None
+        self._rv_worker: ReviewRerenderWorker | None = None
+        self._review_session: ReviewSession | None = None
 
         self.translate_view = TranslateView()
         self.settings_view = SettingsView()
         self.model_view = ModelView()
         self.diagnostics_view = DiagnosticsView()
+        self.review_view = ReviewView()
 
         tabs = QtWidgets.QTabWidget()
         tabs.addTab(self.translate_view, "翻译")
+        tabs.addTab(self.review_view, "校对")
         tabs.addTab(self.settings_view, "设置")
         tabs.addTab(self.model_view, "模型管理")
         tabs.addTab(self.diagnostics_view, "环境自检")
@@ -104,6 +112,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.model_view.dedupeRequested.connect(self._on_model_dedupe)
 
         self.diagnostics_view.recheckRequested.connect(self._run_diagnostics)
+
+        self.review_view.openRequested.connect(self._on_review_open)
+        self.review_view.pageSelected.connect(self._on_review_page_selected)
+        self.review_view.applyTextRequested.connect(self._on_review_apply_text)
+        self.review_view.rerenderRequested.connect(self._on_review_rerender)
+        self.review_view.attentionItemActivated.connect(self._on_review_attention_activated)
 
         self.job_controller.stateChanged.connect(self._on_job_state_changed)
         self.job_controller.progress.connect(self._on_job_progress)
@@ -421,6 +435,86 @@ class MainWindow(QtWidgets.QMainWindow):
         report = detect_environment(model_dir=self.settings.model_dir, bindings=self.settings.model_files)
         self.diagnostics_view.show_report(report)
 
+    # ------------------------------------------------------------ 校对
+    def _on_review_open(self):
+        if self.job_controller.is_busy():
+            QtWidgets.QMessageBox.information(self, "提示", "有任务正在运行，请先等待完成。")
+            return
+        start_dir = str(self._last_completed_output_path) if self._last_completed_output_path \
+            else self.translate_view.default_dir()
+        d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择翻译工作目录（包含 pages.json）", start_dir)
+        if not d:
+            return
+
+        apply_model_dir(self.settings.model_dir)
+        # 校对/单页重渲染要用产生这批结果时的原始配置（模型路径、设备、字体……），
+        # 不是设置页里现在恰好显示的值——job.json 有就优先用它，没有才退回当前设置。
+        fallback_cfg = self.settings.to_config(JobRequest(input_path=""))
+        cfg = load_config_for_review(d, fallback_cfg)
+        try:
+            self._review_session = ReviewSession(d, cfg)
+        except ComicGenError as e:
+            QtWidgets.QMessageBox.warning(self, "无法打开", e.user_message)
+            return
+
+        self.review_view.set_work_dir_label(d)
+        self.review_view.load_pages(self._review_session.page_images(), self._review_attention_tuples())
+
+    def _review_attention_tuples(self) -> list[tuple[str, int, str]]:
+        return [(a.page_image, a.region_index, a.reason) for a in self._review_session.attention_items()]
+
+    def _on_review_page_selected(self, image: str):
+        if self._review_session is None:
+            return
+        page = self._review_session.get_page(image)
+        pixmap = QtGui.QPixmap(str(self._review_session.preview_path(image)))
+        self.review_view.show_page(image, pixmap, page.regions)
+
+    def _on_review_apply_text(self, image: str, region_index: int, text: str):
+        if self._review_session is None:
+            return
+        self._review_session.update_region_text(image, region_index, text)
+        self._review_session.save()
+        self.review_view.refresh_attention(self._review_attention_tuples())
+
+    def _on_review_rerender(self, image: str):
+        if self._review_session is None:
+            return
+        if self.job_controller.is_busy():
+            QtWidgets.QMessageBox.information(self, "提示", "有任务正在运行，请先等待完成。")
+            return
+        # 同一套重入保护（FirstRunDialog 实测复现过丢引用导致 0xC0000409 的那类崩溃）：
+        # 换新线程前不等旧线程收尾。
+        if self._rv_thread is not None and self._rv_thread.isRunning():
+            return
+        self.review_view.set_busy(True)
+        self._rv_thread = QtCore.QThread()
+        self._rv_worker = ReviewRerenderWorker(self._review_session, image)
+        self._rv_worker.moveToThread(self._rv_thread)
+        self._rv_thread.started.connect(self._rv_worker.run)
+        self._rv_worker.finished.connect(self._on_review_rerender_done)
+        self._rv_worker.finished.connect(self._rv_thread.quit)
+        self._rv_thread.start()
+
+    def _on_review_rerender_done(self, image: str, result):
+        self.review_view.set_busy(False)
+        if isinstance(result, Exception):
+            msg = format_job_failure(result) if isinstance(result, ComicGenError) else str(result)
+            QtWidgets.QMessageBox.warning(self, "重渲染失败", msg)
+            return
+        page = self._review_session.get_page(image)
+        pixmap = QtGui.QPixmap(str(result))
+        self.review_view.show_page(image, pixmap, page.regions)
+        self.review_view.refresh_attention(self._review_attention_tuples())
+
+    def _on_review_attention_activated(self, image: str, region_index: int):
+        if self._review_session is None:
+            return
+        if self.review_view.current_image() != image:
+            self.review_view.select_page(image)  # 同线程直连信号，回来后画布已经刷新
+        if region_index >= 0:
+            self.review_view.select_region(region_index)
+
     # ------------------------------------------------------------ 关闭
     def closeEvent(self, event: QtGui.QCloseEvent):
         self.job_controller.shutdown()
@@ -429,7 +523,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 模型/扫描线程同样要等收尾，不能只处理翻译任务的线程——直接退出会让还在跑的
         # QThread 对象在解释器关闭时失去引用，是 FirstRunDialog.closeEvent 已经用同样
         # 方式防过的那类崩溃。
-        for thread in (self._m_thread, self._s_thread):
+        for thread in (self._m_thread, self._s_thread, self._rv_thread):
             if thread is not None and thread.isRunning():
                 thread.quit()
                 thread.wait(3000)

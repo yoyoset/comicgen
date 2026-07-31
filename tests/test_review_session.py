@@ -8,7 +8,7 @@ import json
 import pytest
 from PIL import Image
 
-from comic_gen.app.review_session import ReviewSession
+from comic_gen.app.review_session import ReviewSession, load_config_for_review
 from comic_gen.core.config import Config
 from comic_gen.core.errors import InputError
 from comic_gen.core.models import STATUS_RENDERED, STATUS_TRANSLATED, Page, Region
@@ -136,6 +136,32 @@ def test_rerender_page_writes_output_and_marks_rendered(tmp_path, monkeypatch):
     # rerender_page 内部调用了 save()，重新读一遍磁盘上的 pages.json 应该也看到新状态
     reloaded = ReviewSession(work_dir, Config())
     assert reloaded.get_page("page_1.png").status == STATUS_RENDERED
+
+
+def test_load_config_for_review_prefers_job_json_snapshot(tmp_path):
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    (work_dir / "job.json").write_text(
+        json.dumps({"config": {"translator": "llm", "det_threshold": 0.77}}), encoding="utf-8"
+    )
+    cfg = load_config_for_review(work_dir, fallback=Config(translator="mock"))
+    assert cfg.translator == "llm"
+    assert cfg.det_threshold == 0.77
+
+
+def test_load_config_for_review_falls_back_without_job_json(tmp_path):
+    fallback = Config(translator="mock")
+    cfg = load_config_for_review(tmp_path / "no_such_dir", fallback=fallback)
+    assert cfg is fallback
+
+
+def test_load_config_for_review_falls_back_on_corrupt_job_json(tmp_path):
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    (work_dir / "job.json").write_text("not json", encoding="utf-8")
+    fallback = Config(translator="mock")
+    cfg = load_config_for_review(work_dir, fallback=fallback)
+    assert cfg is fallback
 
 
 def test_rerender_page_reuses_cached_inpainter_across_calls(tmp_path, monkeypatch):
