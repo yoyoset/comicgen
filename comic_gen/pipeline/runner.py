@@ -28,6 +28,7 @@ from ..core.models import (
     Page,
 )
 from ..core.utils import ensure_dir, load_json, save_json
+from ..infra.engine_cache import EngineCache
 from .loader import LoadedInput, default_output_path, load_input, pack_output
 
 _STAGES = ("detect", "ocr", "translate", "render")
@@ -46,29 +47,17 @@ class Runner:
     def __init__(self, cfg: Config | None = None, log=print):
         self.cfg = cfg or Config()
         self.log = log
-        self._detector = None
-        self._detector_sig = None
-        self._ocr = None
-        self._ocr_sig = None
-        self._inpainter = None
-        self._inpainter_sig = None
-        self._translator = None
-        self._translator_sig = None
+        self._detector_cache: EngineCache = EngineCache()
+        self._ocr_cache: EngineCache = EngineCache()
+        self._inpainter_cache: EngineCache = EngineCache()
+        self._translator_cache: EngineCache = EngineCache()
 
     # ------------------------------------------------------------ 懒加载模型
-    def _get_or_rebuild(self, cache_attr: str, sig_attr: str, sig, factory):
-        """按依赖字段的签名判断缓存是否还有效，签名变了就重建。
-
-        JobController 复用同一个 Runner、只换 cfg（改设置不重启整个应用），旧实现只判
-        `is None`，等于「只要建过一次就永远不重建」——实测复现：源语言从日文切到英文后
-        再跑一次，_get_ocr() 返回的还是按日文构造的 manga-ocr 实例，英文页被喂进日文模型；
-        改检测阈值/设备/模型绑定同样不生效。这里换成"每次访问都比对签名"，比只在 __init__
-        判断更彻底，也不需要每个设置项单独写一处失效逻辑。
-        """
-        if getattr(self, cache_attr) is None or getattr(self, sig_attr) != sig:
-            setattr(self, cache_attr, factory())
-            setattr(self, sig_attr, sig)
-        return getattr(self, cache_attr)
+    #
+    # 每个引擎持有自己的 EngineCache（infra.engine_cache），按"依赖字段的签名"判断
+    # 缓存是否还有效——JobController 复用同一个 Runner、只换 cfg（改设置不重启整个
+    # 应用），只判 `is None` 等于"只要建过一次就永远不重建"（实测复现：源语言从日文
+    # 切到英文后再跑一次，_get_ocr() 返回的还是按日文构造的 manga-ocr 实例）。
 
     def _get_detector(self):
         sig = (self.cfg.model_paths.get("detect"), self.cfg.detector_repo,
@@ -81,7 +70,7 @@ class Runner:
             repo = self.cfg.model_paths.get("detect") or self.cfg.detector_repo
             return ComicDetector(repo, self.cfg.device, self.cfg.det_threshold)
 
-        return self._get_or_rebuild("_detector", "_detector_sig", sig, factory)
+        return self._detector_cache.get_or_rebuild(sig, factory)
 
     def _get_ocr(self):
         # OcrEngine.__init__ 按 source_lang 分支选 manga-ocr / EasyOCR，且分别绑定
@@ -95,7 +84,7 @@ class Runner:
             self.log("加载 OCR 模型…")
             return OcrEngine(self.cfg)
 
-        return self._get_or_rebuild("_ocr", "_ocr_sig", sig, factory)
+        return self._ocr_cache.get_or_rebuild(sig, factory)
 
     def _get_inpainter(self):
         sig = (self.cfg.device, self.cfg.model_paths.get("lama"))
@@ -106,10 +95,16 @@ class Runner:
             self.log("加载抹字模型…")
             return Inpainter(self.cfg.device, model_path=self.cfg.model_paths.get("lama"))
 
-        return self._get_or_rebuild("_inpainter", "_inpainter_sig", sig, factory)
+        return self._inpainter_cache.get_or_rebuild(sig, factory)
 
     def _get_translator(self):
-        sig = self.cfg.translator
+        # 之前的签名只有 cfg.translator 一项——实测复现的真 bug：GeneralLLMTranslator
+        # 在构造时把 source_lang/target_lang 烤进 system_prompt（"把日文台词翻译成
+        # 简体中文"这类），只换 target_lang 不换引擎名字，缓存判断不出该重建，会一直
+        # 用旧语言对的 system_prompt 推理。同一个引擎名绑定的模型路径变了也要重建，
+        # 和 detector/ocr/inpainter 保持一致。
+        sig = (self.cfg.translator, self.cfg.source_lang, self.cfg.target_lang,
+               self.cfg.model_paths.get(self.cfg.translator))
 
         def factory():
             from .translate import get_translator
@@ -117,7 +112,7 @@ class Runner:
             self.log(f"加载翻译引擎: {self.cfg.translator}")
             return get_translator(self.cfg)
 
-        return self._get_or_rebuild("_translator", "_translator_sig", sig, factory)
+        return self._translator_cache.get_or_rebuild(sig, factory)
 
     def _needed_model_keys(self) -> list[str]:
         # 从 registry.py 的翻译/OCR 两个注册表推导，不再是这里硬编码的判断——旧代码

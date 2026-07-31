@@ -133,7 +133,7 @@ def test_select_drawable_regions_whitespace_only_treated_as_empty():
     assert select_drawable_regions(regions) == []
 
 
-# ---------------------------------------------------------------- _get_or_rebuild
+# ---------------------------------------------------------------- 引擎缓存失效
 
 
 def test_needed_model_keys_delegates_to_registry():
@@ -148,35 +148,6 @@ def test_needed_model_keys_delegates_to_registry():
         assert set(runner._needed_model_keys()) == set(needed_model_keys(cfg))
     # 明确锁住这个历史 bug 不再回归
     assert "ocr_other" in Runner(Config(translator="llm", source_lang="en"))._needed_model_keys()
-
-
-def test_get_or_rebuild_reuses_when_signature_unchanged():
-    runner = Runner(Config())
-    calls = []
-
-    def factory():
-        calls.append(1)
-        return object()
-
-    a = runner._get_or_rebuild("_detector", "_detector_sig", "sig-a", factory)
-    b = runner._get_or_rebuild("_detector", "_detector_sig", "sig-a", factory)
-    assert a is b
-    assert len(calls) == 1
-
-
-def test_get_or_rebuild_rebuilds_when_signature_changes():
-    """这是 0.1 的核心机制：签名变了必须重建，不能只判 is None。"""
-    runner = Runner(Config())
-    calls = []
-
-    def factory():
-        calls.append(1)
-        return object()
-
-    a = runner._get_or_rebuild("_detector", "_detector_sig", "sig-a", factory)
-    b = runner._get_or_rebuild("_detector", "_detector_sig", "sig-b", factory)
-    assert a is not b
-    assert len(calls) == 2
 
 
 def test_get_ocr_rebuilds_when_source_lang_changes(monkeypatch):
@@ -248,6 +219,62 @@ def test_get_inpainter_rebuilds_when_model_binding_changes(monkeypatch):
     i2 = runner._get_inpainter()
     assert created_with == [None, "F:/models/big-lama.pt"]
     assert i2 is not i1
+
+
+def test_get_translator_rebuilds_when_target_lang_changes(monkeypatch):
+    """2.5 回归测试：实测复现的真 bug——旧的缓存签名只有 cfg.translator 一项。
+    GeneralLLMTranslator 在构造时把 source_lang/target_lang 烤进 system_prompt，
+    只换 target_lang（引擎名字不变）时旧签名判断不出该重建，会一直用旧语言对的
+    system_prompt 推理。
+    """
+    import comic_gen.pipeline.registry as registry_mod
+
+    created_with = []
+
+    class FakeTranslator:
+        name = "llm"
+
+        def __init__(self, cfg):
+            created_with.append((cfg.source_lang, cfg.target_lang))
+
+    monkeypatch.setattr(
+        registry_mod,
+        "TRANSLATOR_REGISTRY",
+        {"llm": registry_mod.TranslatorEntry("llm", FakeTranslator)},
+    )
+
+    runner = Runner(Config(translator="llm", source_lang="en", target_lang="简体中文"))
+    t1 = runner._get_translator()
+    assert created_with == [("en", "简体中文")]
+
+    runner.cfg = Config(translator="llm", source_lang="en", target_lang="繁體中文")
+    t2 = runner._get_translator()
+    assert created_with == [("en", "简体中文"), ("en", "繁體中文")]
+    assert t2 is not t1
+
+
+def test_get_translator_reuses_when_nothing_relevant_changed(monkeypatch):
+    import comic_gen.pipeline.registry as registry_mod
+
+    created_with = []
+
+    class FakeTranslator:
+        name = "llm"
+
+        def __init__(self, cfg):
+            created_with.append(1)
+
+    monkeypatch.setattr(
+        registry_mod,
+        "TRANSLATOR_REGISTRY",
+        {"llm": registry_mod.TranslatorEntry("llm", FakeTranslator)},
+    )
+
+    runner = Runner(Config(translator="llm", source_lang="en", target_lang="简体中文"))
+    t1 = runner._get_translator()
+    t2 = runner._get_translator()
+    assert t1 is t2
+    assert len(created_with) == 1
 
 
 # ---------------------------------------------------------------- run() 编排（用假引擎，不加载真模型）
