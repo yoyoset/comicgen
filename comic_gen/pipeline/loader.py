@@ -190,15 +190,41 @@ def default_output_path(loaded: LoadedInput) -> Path:
     return p.parent / (p.stem + "_translated" + suffix)
 
 
-def pack_output(loaded: LoadedInput, translated_dir: Path, output_path: Path, pdf_dpi: int = 150) -> Path:
-    """把翻译后的图片按输入同构打包。"""
+def _resolve_page_image(name: str, translated_dir: Path, orig_map: dict[str, Path]) -> Path | None:
+    """优先用翻译后的图；该页翻译失败（检测/OCR/翻译/渲染任一阶段出错）没有产出时，
+    回退用原图，而不是把这一页整个跳过。
+
+    之前的行为是任何一页失败就不写进 translated_dir，打包时原样跳过——JobReport 里
+    能看到失败计数，但交付的文件页数比原作少，很容易被忽略。回退原图虽然那一页没有
+    译文，至少页数和原作对得上，用户翻到那页能看到原文而不是发现书缺了一页。
+    """
+    img = translated_dir / name
+    if img.exists():
+        return img
+    orig = orig_map.get(name)
+    if orig is not None and Path(orig).exists():
+        return Path(orig)
+    return None
+
+
+def pack_output(loaded: LoadedInput, translated_dir: Path, output_path: Path,
+                 pdf_dpi: int = 150, log=None) -> Path:
+    """把翻译后的图片按输入同构打包。log 不为 None 时，对每个回退用原图的页调用一次。"""
     translated_dir = Path(translated_dir)
     output_path = Path(output_path)
+    orig_map = dict(zip(loaded.rel_names, loaded.pages))
+
+    def resolve(name: str) -> Path | None:
+        img = _resolve_page_image(name, translated_dir, orig_map)
+        if img is not None and log is not None and not (translated_dir / name).exists():
+            log(f"[警告] {name} 翻译未完成，打包时使用原图")
+        return img
+
     if loaded.kind == "folder":
         out = ensure_dir(output_path)
         for name in loaded.rel_names:
-            img = translated_dir / name
-            if img.exists():
+            img = resolve(name)
+            if img is not None:
                 ensure_dir((out / name).parent)
                 shutil.copy2(img, out / name)
         return out
@@ -206,18 +232,18 @@ def pack_output(loaded: LoadedInput, translated_dir: Path, output_path: Path, pd
         ensure_dir(output_path.parent)
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for name in loaded.rel_names:
-                img = translated_dir / name
-                if img.exists():
+                img = resolve(name)
+                if img is not None:
                     zf.write(img, name)
         return output_path
     if loaded.kind == "pdf":
-        return _pack_pdf(loaded, translated_dir, output_path, pdf_dpi)
+        return _pack_pdf(loaded, translated_dir, output_path, pdf_dpi, log=log)
     if loaded.kind == "epub":
         staging = loaded.work_dir
         for name in loaded.rel_names:
-            img = translated_dir / name
+            img = resolve(name)
             dst = staging / name
-            if img.exists():
+            if img is not None and Path(img).resolve() != dst.resolve():
                 shutil.copy2(img, dst)
         ensure_dir(output_path.parent)
         with zipfile.ZipFile(output_path, "w") as zf:
@@ -232,17 +258,22 @@ def pack_output(loaded: LoadedInput, translated_dir: Path, output_path: Path, pd
     raise ValueError(f"未知输入类型: {loaded.kind}")
 
 
-def _pack_pdf(loaded: LoadedInput, translated_dir: Path, output_path: Path, pdf_dpi: int = 150) -> Path:
+def _pack_pdf(loaded: LoadedInput, translated_dir: Path, output_path: Path,
+              pdf_dpi: int = 150, log=None) -> Path:
     """把翻译后的每页 PNG 合并回 PDF（每页整页铺图）。"""
     import fitz
 
+    orig_map = dict(zip(loaded.rel_names, loaded.pages))
     ensure_dir(output_path.parent)
     out = fitz.open()
     for name in loaded.rel_names:
-        img = translated_dir / name
-        if not img.exists():
+        img = _resolve_page_image(name, translated_dir, orig_map)
+        if img is None:
             continue
-        # 以图片像素 @pdf_dpi 推导页面尺寸（与输入渲染 DPI 一致）
+        if log is not None and not (translated_dir / name).exists():
+            log(f"[警告] {name} 翻译未完成，打包时使用原图")
+        # 以图片像素 @pdf_dpi 推导页面尺寸（与输入渲染 DPI 一致；回退的原图本来就是
+        # 按 pdf_dpi 光栅化出来的 PNG，尺寸假设同样成立）
         from PIL import Image as _IMG
 
         with _IMG.open(img) as im:
