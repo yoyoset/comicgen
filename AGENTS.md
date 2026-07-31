@@ -37,9 +37,13 @@ comic_gen/
 │                manifest.py(6 个模型的单一清册：repo/文件名/精确大小/目录成员表)
 │                model_locator.py(本地权重定位 + 四态状态机 ready/missing/path_broken/size_mismatch)
 │                settings.py(AppSettings 持久化，唯一的 Config 组装点) paths.py(便携配置路径)
-│                environment.py(能力探测 EnvReport) job.py(JobRequest/JobReport) utils.py
+│                environment.py(能力探测 EnvReport) job.py(JobRequest/JobReport/job.json 快照) utils.py
+│                errors.py(ComicGenError 层次：ModelError/InputError/OutputError)
+│                contracts.py(Detector/OcrBackend/Translator 的 Protocol 类型契约)
+├── infra/       logging.py(桥接叶子模块日志到 UI 面板 + 每任务 run.log)
 ├── pipeline/    loader(解包/打包) detect(RT-DETRv2) ocr(manga-ocr/EasyOCR)
 │                translate(sakura/llm/mock，全本地 GGUF) inpaint(LaMa+取色) render(横竖排自适应)
+│                registry.py(翻译引擎/OCR 后端的单一注册表，取代硬编码 if/elif 分发)
 │                runner(编排+pages.json断点续跑+JobReport+协作式取消)
 └── ui/
     ├── main_window.py   组合根：只接线，不含业务决策
@@ -63,6 +67,7 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 4. **全部本地翻译引擎**（`Config.translator`：`sakura`/`llm`/`mock`），不联网、不需要 API Key。Sakura 为日文专用（GGUF，轻小说风格），`source_lang != "ja"` 时 `pipeline.translate.engine_lang_conflict` 会拦截并提示改用 `llm`（通用多语言 GGUF）。
 5. **多语言分工**：`Config.source_lang`（ja/en/zh/other）决定 OCR 后端——日文 manga-ocr，英/中/其它 EasyOCR；翻译引擎推荐——日文 sakura，其它 llm（`pipeline.translate.ENGINE_RECOMMENDATION`，UI 源语言变化时联动改引擎下拉）。
 5a. **每个模型独立路径绑定**：`AppSettings.model_files`（manifest 键 → 绝对路径）经 `to_config()` 传进 `Config.model_paths`，是每次任务的不可变快照（不是进程级全局表——运行中改设置不会影响正在跑的任务）。解析顺序：显式绑定 → 本地缓存搜索（`core.model_locator`）→ 联网下载兜底。绑定失效（文件被移走）或大小不对，直接报错，绝不静默回落去联网下载新的顶替。
+5b. **翻译/OCR 分发走注册表**：`pipeline/registry.py` 是翻译引擎（sakura/llm/mock）和 OCR 后端（ocr_ja/ocr_other）唯一的分发数据源；`runner._needed_model_keys`、`ocr.OcrEngine.__init__` 都从这里读，不再各自硬编码 if/elif。`pipeline.translate` 里的 `get_translator`/`engine_lang_conflict`/`ENGINE_LANG_LOCK`/`ENGINE_RECOMMENDATION` 仍然可以照常导入（模块级 `__getattr__` 惰性转发到 registry.py，避免两个模块互相需要对方顶层定义造成循环导入——这是实测复现过的真崩溃，不是预防性设计）。加一个新引擎/后端只需要在 registry.py 里加一条 Entry；`ui/workers.py` 的下载面板、`ui/views/translate_view.py` 的引擎下拉框仍是各自硬编码，留到真的要加第三个引擎/后端时再一起改。
 6. **检测模型**用 `ogkalu/comic-text-and-bubble-detector`（Apache-2.0，规避 GPL 系工具的许可证风险）；类别 0=bubble 1=text_bubble 2=text_free，bubble 类丢弃。
 6. **取色**：未膨胀 mask + 腐蚀核心 + 中位数（膨胀 mask 会混入背景色导致译文发灰）。
 7. **描边策略**：仅浅色文字加黑描边（1px）；深色文字不描边（气泡内描边会糊）。

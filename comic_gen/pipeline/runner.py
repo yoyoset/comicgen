@@ -120,12 +120,12 @@ class Runner:
         return self._get_or_rebuild("_translator", "_translator_sig", sig, factory)
 
     def _needed_model_keys(self) -> list[str]:
-        keys = ["detect", "lama"]
-        if self.cfg.source_lang == "ja":
-            keys.append("ocr_ja")
-        if self.cfg.translator in ("sakura", "llm"):
-            keys.append(self.cfg.translator)
-        return keys
+        # 从 registry.py 的翻译/OCR 两个注册表推导，不再是这里硬编码的判断——旧代码
+        # `if translator in ("sakura","llm")` 是个陷阱（加新引擎要记得同步这个元组），
+        # 且从未有任何分支会把 ocr_other 加进来，非日文任务的离线就绪检查一直不完整。
+        from .registry import needed_model_keys
+
+        return needed_model_keys(self.cfg)
 
     def _go_offline_if_ready(self) -> None:
         """本次任务要用的模型都在本地时切离线，免得网络不通时白等 HF 的 etag 重试。"""

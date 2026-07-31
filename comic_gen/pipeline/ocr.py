@@ -5,7 +5,7 @@ import numpy as np
 from PIL import Image
 
 from ..core.config import Config
-from ..core.errors import ModelError
+from ..core.errors import InputError, ModelError
 from ..core.models import Region
 from ..infra.logging import logger
 
@@ -29,26 +29,27 @@ def assemble_easyocr_text(results, min_conf: float = EASYOCR_MIN_CONF) -> str:
 
 class OcrEngine:
     def __init__(self, cfg: Config):
-        self.lang = cfg.source_lang
-        if self.lang == "ja":
-            from manga_ocr import MangaOcr
+        # 用哪个后端由 registry.OCR_REGISTRY 的 languages 集合决定，不再是这里手写
+        # 的 if/else——加一个新后端只需要在 registry.py 里加一条 Entry，不需要再回
+        # 来改这个构造函数。
+        from .registry import ocr_backend_for
 
-            model_dir = cfg.model_paths.get("ocr_ja")
-            self._mocr = MangaOcr(pretrained_model_name_or_path=model_dir) if model_dir else MangaOcr()
+        self.lang = cfg.source_lang
+        entry = ocr_backend_for(self.lang)
+        if entry is None:
+            raise InputError(f"不支持的源语言：{self.lang}")
+
+        if entry.key == "ocr_ja":
+            self._mocr = entry.factory(cfg)
             self._easy = None
         else:
             try:
-                import easyocr
-                import torch
+                self._easy = entry.factory(cfg)
             except ImportError as e:
                 raise ModelError(
                     "非日文 OCR 需要 easyocr，请运行: .\\.venv\\Scripts\\python.exe -m pip install easyocr",
                     technical=str(e),
                 ) from e
-            code = {"en": ["en"], "zh": ["ch_sim", "en"]}.get(self.lang, ["en"])
-            storage_dir = cfg.model_paths.get("ocr_other")
-            self._easy = easyocr.Reader(code, gpu=torch.cuda.is_available(),
-                                         model_storage_directory=storage_dir)
             self._mocr = None
 
     def recognize_regions(self, image: Image.Image, regions: list[Region], pad: int = 6):

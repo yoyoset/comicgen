@@ -136,6 +136,20 @@ def test_select_drawable_regions_whitespace_only_treated_as_empty():
 # ---------------------------------------------------------------- _get_or_rebuild
 
 
+def test_needed_model_keys_delegates_to_registry():
+    """2.4 回归测试：Runner._needed_model_keys 应该和 registry.needed_model_keys
+    产出一致——包括之前的真 bug（非日文任务要包含 ocr_other）。
+    """
+    from comic_gen.pipeline.registry import needed_model_keys
+
+    for translator, lang in [("sakura", "ja"), ("llm", "en"), ("mock", "zh")]:
+        cfg = Config(translator=translator, source_lang=lang)
+        runner = Runner(cfg)
+        assert set(runner._needed_model_keys()) == set(needed_model_keys(cfg))
+    # 明确锁住这个历史 bug 不再回归
+    assert "ocr_other" in Runner(Config(translator="llm", source_lang="en"))._needed_model_keys()
+
+
 def test_get_or_rebuild_reuses_when_signature_unchanged():
     runner = Runner(Config())
     calls = []

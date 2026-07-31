@@ -217,34 +217,29 @@ class MockTranslator(BaseTranslator):
         return [f"测试译文{i + 1}号" for i in range(len(texts))]
 
 
-_TRANSLATORS = {
-    "sakura": SakuraTranslator,
-    "llm": GeneralLLMTranslator,
-    "mock": MockTranslator,
-}
+# ---------------------------------------------------------------- 注册表（单一来源）
+# 引擎分发/语言锁/推荐映射的实际数据和逻辑搬进了 pipeline/registry.py（新增的 OCR
+# 后端注册表放在同一个文件，两者是同一类问题）。这里用模块级 __getattr__（PEP 562）
+# 而不是模块顶层 `from .registry import ...` 委托——后者会在真实导入时炸：
+# registry.py 的 _build_translator_registry() 需要从本模块拿 SakuraTranslator 等类
+# （放在函数体内、惰性 import，本身没问题），但如果 registry.py 先于 translate.py
+# 被导入，它会在自己模块体执行到一半时反过来 import 本模块；本模块此时如果在顶层
+# 又立刻 `from .registry import TRANSLATOR_REGISTRY`，registry.py 还没把这个名字
+# 赋值完，就会报 "cannot import name 'TRANSLATOR_REGISTRY' from partially
+# initialized module"——这是实测复现过的真崩溃，不是假设性担忧
+# （`from comic_gen.pipeline.registry import get_translator` 单独跑必现）。
+# __getattr__ 只在属性访问时才触发，此时两个模块各自的顶层类/函数定义早已跑完，
+# 不会撞上"对方还在初始化中"的窗口。
+_LAZY_REGISTRY_NAMES = {"get_translator", "engine_lang_conflict", "ENGINE_LANG_LOCK", "ENGINE_RECOMMENDATION"}
 
 
-def get_translator(cfg: Config) -> BaseTranslator:
-    cls = _TRANSLATORS.get(cfg.translator)
-    if cls is None:
-        raise InputError(f"未知翻译引擎: {cfg.translator}")
-    if cls is MockTranslator:
-        return cls()
-    return cls(cfg)
+def __getattr__(name):
+    if name not in _LAZY_REGISTRY_NAMES:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from . import registry
 
-
-# ---------------------------------------------------------------- 引擎/语言约束（单一来源）
-# 之前"Sakura 仅日文"这条规则在 UI 预校验与 SakuraTranslator.__init__ 里各写一份。
-# 这里收成单一映射，UI 校验直接查表；SakuraTranslator 的运行时检查作为纵深防御保留。
-ENGINE_LANG_LOCK: dict[str, str] = {"sakura": "ja"}
-
-# 源语言 → 推荐引擎（UI 语言联动引擎下拉时使用）
-ENGINE_RECOMMENDATION: dict[str, str] = {"ja": "sakura", "en": "llm", "zh": "llm", "other": "llm"}
-
-
-def engine_lang_conflict(engine: str, source_lang: str) -> str | None:
-    """若引擎与源语言不兼容，返回人话错误信息；兼容则返回 None。"""
-    locked = ENGINE_LANG_LOCK.get(engine)
-    if locked and locked != source_lang:
-        return f"{engine} 引擎仅支持源语言「{locked}」，当前选择的是「{source_lang}」。"
-    return None
+    if name == "ENGINE_LANG_LOCK":
+        return {n: e.lang_lock for n, e in registry.TRANSLATOR_REGISTRY.items() if e.lang_lock}
+    if name == "ENGINE_RECOMMENDATION":
+        return {lang: registry.recommended_engine(lang) for lang in ("ja", "en", "zh", "other")}
+    return getattr(registry, name)
