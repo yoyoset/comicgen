@@ -161,6 +161,12 @@ class MainWindow(QtWidgets.QMainWindow):
         apply_model_dir(self.settings.model_dir)
         cfg = self.settings.to_config(request)
 
+        not_ready = self._models_not_ready_message(cfg)
+        if not_ready:
+            QtWidgets.QMessageBox.warning(self, "模型未就绪", not_ready)
+            self.centralWidget().setCurrentWidget(self.model_view)
+            return
+
         self.settings.last_input_dir = str(Path(request.input_path).parent)
         if request.output_path:
             self.settings.last_output_dir = str(Path(request.output_path).parent)
@@ -174,6 +180,26 @@ class MainWindow(QtWidgets.QMainWindow):
             self.job_controller.start(request, cfg)
         except RuntimeError as e:
             QtWidgets.QMessageBox.warning(self, "提示", str(e))
+
+    def _models_not_ready_message(self, cfg) -> str | None:
+        """开始翻译前的门槛检查：之前只校验非空输入+引擎语言兼容，不检查任何模型
+        是否就位。点"稍后再说"的新用户第一次点"开始翻译"会在不定长等待后撞上
+        运行期异常——本该在这里提前拦下，给一句能直接照做的人话。
+        needed_model_keys/resolve_status 和 Runner._go_offline_if_ready 用的是同一套
+        数据源，不重复定义"这次任务需要哪些模型"的判断逻辑。
+        """
+        from ..core.model_locator import resolve_status, status_text
+        from ..pipeline.registry import needed_model_keys
+
+        problems = []
+        for key in needed_model_keys(cfg):
+            st = resolve_status(key, bindings=self.settings.model_files, model_dir=self.settings.model_dir)
+            if not st.is_ready:
+                text, _ = status_text(st)
+                problems.append(f"· {MODEL_MANIFEST[key].label}：{text}")
+        if not problems:
+            return None
+        return "以下模型还没准备好，请先到「模型管理」页下载或定位：\n\n" + "\n".join(problems)
 
     def _on_rerender(self):
         if self.job_controller.is_busy():
