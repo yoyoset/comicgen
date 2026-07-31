@@ -53,8 +53,14 @@ def _load_folder(p: Path) -> LoadedInput:
 
 def _extract_archive(p: Path, out: Path) -> Path:
     src = ensure_dir(out / "src")
-    with zipfile.ZipFile(p) as zf:
-        zf.extractall(src)
+    try:
+        with zipfile.ZipFile(p) as zf:
+            zf.extractall(src)
+    except (OSError, zipfile.BadZipFile) as e:
+        # 文件不存在/不可读/不是有效 zip——之前是裸 FileNotFoundError/BadZipFile 一路
+        # 抛到最外层，CLI/UI 都只能显示原始堆栈。这是用户最容易撞到的错误之一
+        # （路径打错字），值得包成人话。
+        raise InputError(f"无法打开输入文件：{p}（{e}）", technical=str(e)) from e
     return src
 
 

@@ -41,6 +41,7 @@ test = [
 
 [project.scripts]
 comicgen-ui = "comic_gen.ui.app:main"
+comicgen = "comic_gen.app.job_service:main"
 
 [tool.setuptools.packages.find]
 include = ["comic_gen*"]

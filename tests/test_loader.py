@@ -4,7 +4,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 from PIL import Image
-from comic_gen.pipeline.loader import pack_output, LoadedInput
+from comic_gen.core.errors import InputError
+from comic_gen.pipeline.loader import load_input, pack_output, LoadedInput
 
 
 def create_test_images(tmpdir: Path, count: int = 2):
@@ -80,6 +81,22 @@ def test_pack_output_zip():
             names = zf.namelist()
             assert "page_001.png" in names
             assert "page_002.png" in names
+
+
+def test_load_input_missing_zip_raises_input_error(tmp_path):
+    """回归测试：实测复现过——缺失的 zip 之前是裸 FileNotFoundError 一路抛到 CLI
+    最外层，打印一整段 Python 堆栈。改成 InputError，人话+原始异常都保留。
+    """
+    missing = tmp_path / "does_not_exist.zip"
+    with pytest.raises(InputError, match="无法打开输入文件"):
+        load_input(missing, tmp_path / "_extract")
+
+
+def test_load_input_corrupt_zip_raises_input_error(tmp_path):
+    bad_zip = tmp_path / "corrupt.zip"
+    bad_zip.write_bytes(b"this is not a real zip file")
+    with pytest.raises(InputError, match="无法打开输入文件"):
+        load_input(bad_zip, tmp_path / "_extract")
 
 
 def test_pack_output_missing_images_and_no_original_are_skipped():

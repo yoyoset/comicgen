@@ -19,6 +19,9 @@ python -m venv .venv
 # 启动 UI
 .\.venv\Scripts\python.exe -m comic_gen.ui.app
 
+# 命令行跑一次任务（不需要 UI；装完 -e . 后可直接用 comicgen 命令）
+.\.venv\Scripts\python.exe -m comic_gen.app.job_service <输入路径> -o <输出路径> --translator mock
+
 # 生成自测素材（合成漫画页 + 最小 EPUB）
 .\.venv\Scripts\python.exe scripts\make_sample.py
 .\.venv\Scripts\python.exe scripts\make_sample_epub.py
@@ -38,13 +41,18 @@ comic_gen/
 │                model_locator.py(本地权重定位 + 四态状态机 ready/missing/path_broken/size_mismatch)
 │                settings.py(AppSettings 持久化，唯一的 Config 组装点) paths.py(便携配置路径)
 │                environment.py(能力探测 EnvReport) job.py(JobRequest/JobReport/job.json 快照) utils.py
-│                errors.py(ComicGenError 层次：ModelError/InputError/OutputError)
+│                errors.py(ComicGenError 层次：ModelError/InputError/OutputError；
+│                          format_job_failure 供 UI/CLI 共用，Qt-free)
 │                contracts.py(Detector/OcrBackend/Translator 的 Protocol 类型契约)
 ├── infra/       logging.py(桥接叶子模块日志到 UI 面板 + 每任务 run.log)
+│                engine_cache.py(EngineCache：按依赖字段签名判断懒加载缓存是否要重建)
 ├── pipeline/    loader(解包/打包) detect(RT-DETRv2) ocr(manga-ocr/EasyOCR)
 │                translate(sakura/llm/mock，全本地 GGUF) inpaint(LaMa+取色) render(横竖排自适应)
 │                registry.py(翻译引擎/OCR 后端的单一注册表，取代硬编码 if/elif 分发)
-│                runner(编排+pages.json断点续跑+JobReport+协作式取消)
+│                runner(编排+pages.json断点续跑+job.json快照+JobReport+协作式取消)
+├── app/         job_service.py（Qt-free 任务入口，`comicgen` CLI 用这个；
+│                UI 走 ui/job_controller.py 是因为需要跨任务复用 Runner 的引擎缓存，
+│                这里每次调用建一个新 Runner，跑完即弃，不是要取代那条路径）
 └── ui/
     ├── main_window.py   组合根：只接线，不含业务决策
     ├── job_controller.py 任务生命周期唯一归属（idle/running/cancelling）

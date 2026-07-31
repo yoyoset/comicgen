@@ -12,6 +12,7 @@ technical 是原始异常信息（默认等于 user_message），供日志使用
 """
 from __future__ import annotations
 
+import traceback
 from enum import Enum
 
 
@@ -42,3 +43,19 @@ class InputError(ComicGenError):
 
 class OutputError(ComicGenError):
     """输出路径不安全（会覆盖原图）或无法校验。"""
+
+
+def format_job_failure(e: Exception) -> str:
+    """异常 -> 呈现给用户的一行/多行字符串。UI（ui/workers.py）和 CLI
+    （app/job_service.py）共用同一个函数，放在这里（而不是 ui/workers.py）是因为
+    CLI 不该为了这一个函数去依赖 PySide6——这个函数本身从来没有用到过 Qt。
+
+    ComicGenError 已经带了 pipeline 各层费心写好的人话文案（比如"设置里绑定的 X
+    文件已找不到，请到「模型管理」页重新定位"），不分青红皂白地把
+    traceback.format_exc() 糊在后面会把这句话埋在一堆 Python 堆栈下面。其它未预期
+    的异常仍然带全部 traceback——那类失败往往是真的程序 bug，需要完整诊断信息，
+    不能藏起来。
+    """
+    if isinstance(e, ComicGenError):
+        return f"失败：{e.user_message}"
+    return f"失败：{e}\n{traceback.format_exc()}"
