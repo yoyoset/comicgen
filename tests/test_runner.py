@@ -532,3 +532,21 @@ def test_run_writes_job_snapshot_even_when_every_page_fails(tmp_path, monkeypatc
     assert job_data["stages"]["detect"]["page_count"] == 1
     # 后续阶段（OCR/翻译/渲染）因为没有页面进入 STATUS_DETECTED，todo 为空，不记录耗时
     assert "ocr" not in job_data["stages"]
+
+
+def test_run_cancelled_report_carries_resolved_output_path(tmp_path, monkeypatch):
+    """3.2 回归测试：取消发生在检测阶段第一页之前，此时 output_path 早已解析好
+    （在任何阶段循环之前），JobReport.cancelled 必须把它带出来——UI 用它回填输出框，
+    防止用户下次留空/改填导致 work_dir 解析到别处、整卷从零重来。
+    之前 4 处取消返回点都是裸 `JobReport.cancelled(pages)`，output_path 永远是 None。
+    """
+    _make_fake_pipeline(monkeypatch)
+    input_dir = _make_input_folder(tmp_path, n=3)
+    output_dir = tmp_path / "output"
+
+    cfg = Config(translator="mock", source_lang="ja")
+    report = Runner(cfg).run(str(input_dir), str(output_dir), should_cancel=lambda: True)
+
+    assert report.status == "cancelled"
+    assert report.output_path == output_dir
+    assert "0/3" in report.summary

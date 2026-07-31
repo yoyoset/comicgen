@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from .models import STATUS_RENDERED
+
 JobStatus = Literal["ok", "partial", "failed", "cancelled"]
 
 
@@ -78,14 +80,22 @@ class JobReport:
                     failed_pages=failures, summary=summary)
 
     @classmethod
-    def cancelled(cls, pages: list) -> "JobReport":
-        """用户主动停止。当前页已写完、pages.json 完好，可重跑续上。"""
+    def cancelled(cls, pages: list, output_path: Path | None = None) -> "JobReport":
+        """用户主动停止。当前页已写完、pages.json 完好，可重跑续上。
+
+        output_path 是本次任务已经解析好的最终产物路径（在任何阶段循环开始之前就
+        算出来了，即使还没跑到打包那一步）——UI 拿它回填输出框，防止用户下次留空/
+        填了不一样的路径，导致 work_dir 解析到别处、整卷从零重来（这条路径匹配规则
+        与 Runner._work_dir 一致，之前 UI 完全没有这个提示）。
+        """
+        total = len(pages)
+        completed = sum(1 for p in pages if getattr(p, "status", None) == STATUS_RENDERED)
         return cls(
             status="cancelled",
-            output_path=None,
-            total_pages=len(pages),
+            output_path=output_path,
+            total_pages=total,
             failed_pages=[],
-            summary="已停止。当前进度已保存，可重新运行以继续。",
+            summary=f"已停止。已完成 {completed}/{total} 页，进度已保存，用相同的输入/输出路径重新运行即可继续。",
         )
 
 

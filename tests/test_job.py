@@ -77,6 +77,23 @@ def test_cancelled_report_shape():
     assert "已停止" in report.summary
 
 
+def test_cancelled_report_counts_only_rendered_pages_as_completed():
+    pages = [
+        _rendered_page("a.png"),
+        Page(image="b.png", status="translated", error=""),
+        Page(image="c.png", status="pending", error=""),
+    ]
+    report = JobReport.cancelled(pages)
+    assert "1/3" in report.summary
+
+
+def test_cancelled_report_carries_output_path_for_ui_prefill():
+    from pathlib import Path
+
+    report = JobReport.cancelled([_rendered_page("a.png")], Path("/tmp/out"))
+    assert report.output_path == Path("/tmp/out")
+
+
 def test_page_failure_stage_matches_core_errors_stage_values():
     """PageFailure.stage 的值域应该和 core.errors.Stage 一致。"""
     from comic_gen.core.errors import Stage

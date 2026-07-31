@@ -281,7 +281,7 @@ class Runner:
             for i, p in enumerate(todo):
                 if cancelled():
                     self.log("已停止（检测阶段）")
-                    return JobReport.cancelled(pages)
+                    return JobReport.cancelled(pages, output_path)
                 try:
                     p.regions = reading_order(det.detect(open_page(p)), rtl=rtl)
                     p.width, p.height = Image.open(page_img[p.image]).size
@@ -307,7 +307,7 @@ class Runner:
             for i, p in enumerate(todo):
                 if cancelled():
                     self.log("已停止（OCR 阶段）")
-                    return JobReport.cancelled(pages)
+                    return JobReport.cancelled(pages, output_path)
                 try:
                     ocr.recognize_regions(open_page(p), p.regions)
                     p.status = STATUS_OCRED
@@ -333,7 +333,7 @@ class Runner:
                 if cancelled():
                     self.log("已停止（翻译阶段）")
                     self._save_pages(work_dir, pages, input_path)
-                    return JobReport.cancelled(pages)
+                    return JobReport.cancelled(pages, output_path)
                 regions = [r for r in p.regions if r.source_text.strip()]
                 if regions:
                     texts = [r.source_text for r in regions]
@@ -373,7 +373,7 @@ class Runner:
             for i, p in enumerate(todo):
                 if cancelled():
                     self.log("已停止（渲染阶段）")
-                    return JobReport.cancelled(pages)
+                    return JobReport.cancelled(pages, output_path)
                 try:
                     img = open_page(p)
                     drawable = select_drawable_regions(p.regions)

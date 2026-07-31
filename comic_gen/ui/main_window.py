@@ -308,7 +308,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 detail = "\n".join(f"· {f.image}：{f.message}" for f in result.failed_pages[:20])
                 QtWidgets.QMessageBox.warning(self, "部分完成", f"{result.summary}\n\n{detail}")
             elif result.status == "cancelled":
+                # 之前只设了状态栏文字，JobReport.cancelled 里写好的"已完成 X/Y 页，
+                # 用相同路径重新运行即可继续"这句话从来到不了用户眼前。同时把已解析的
+                # 输出路径回填进输出框——用户下次若改填/清空这个字段，Runner._work_dir
+                # 会解析到不同目录，整卷会从零重来，回填能让默认的"再点一次开始"保持安全。
                 self.status_lbl.setText("已停止")
+                if result.output_path:
+                    self.translate_view.output_edit.setText(str(result.output_path))
+                QtWidgets.QMessageBox.information(self, "已停止", result.summary)
             else:  # failed
                 detail = "\n".join(f"· {f.image}：{f.message}" for f in result.failed_pages[:20])
                 QtWidgets.QMessageBox.critical(self, "失败", f"{result.summary}\n\n{detail}")
