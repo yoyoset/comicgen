@@ -83,7 +83,11 @@ class SettingsView(QtWidgets.QWidget):
         self.threshold_spin = QtWidgets.QDoubleSpinBox()
         self.threshold_spin.setRange(0.05, 0.95)
         self.threshold_spin.setSingleStep(0.05)
-        self.threshold_spin.valueChanged.connect(self._emit_changed)
+        # editingFinished（失焦/回车才触发）而不是 valueChanged（每一步都触发）——
+        # _emit_changed 会连带写盘 + 触发一次全盘模型扫描，拖动/滚轮连续调整这个
+        # 数值会在很短时间内连开几十上百个扫描线程。和 model_dir_edit/font_edit
+        # 用的是同一个模式。
+        self.threshold_spin.editingFinished.connect(self._emit_changed)
         lay.addRow("检测阈值", self.threshold_spin)
         lay.addRow("", _hint("调低能检出更多文字区域但误检也会增加；调高更严格，但可能漏掉字号小或不清晰的文字。"))
 
@@ -96,7 +100,7 @@ class SettingsView(QtWidgets.QWidget):
         self.dpi_spin = QtWidgets.QSpinBox()
         self.dpi_spin.setRange(72, 600)
         self.dpi_spin.setSuffix(" DPI")
-        self.dpi_spin.valueChanged.connect(self._emit_changed)
+        self.dpi_spin.editingFinished.connect(self._emit_changed)
         lay.addRow("PDF DPI", self.dpi_spin)
         lay.addRow("", _hint("仅影响 PDF 输入的渲染分辨率：150 速度快且够用，300 画质更好但明显更慢。"))
 
@@ -114,12 +118,16 @@ class SettingsView(QtWidgets.QWidget):
 
         self.min_font_spin = QtWidgets.QSpinBox()
         self.min_font_spin.setRange(4, 200)
+        # 跨字段约束（min<=max）要实时响应 valueChanged 才能在用户拖动时即时纠正另一
+        # 个 spinbox；但落盘+触发扫描挪到 editingFinished，理由同上面 threshold_spin。
         self.min_font_spin.valueChanged.connect(self._on_min_font_changed)
+        self.min_font_spin.editingFinished.connect(self._emit_changed)
         lay.addRow("最小字号", self.min_font_spin)
 
         self.max_font_spin = QtWidgets.QSpinBox()
         self.max_font_spin.setRange(4, 200)
         self.max_font_spin.valueChanged.connect(self._on_max_font_changed)
+        self.max_font_spin.editingFinished.connect(self._emit_changed)
         lay.addRow("最大字号", self.max_font_spin)
         lay.addRow("", _hint("译文按气泡大小自动缩放字号，超出这个区间就不再继续缩放；最小字号不能大于最大字号。"))
 
@@ -142,18 +150,17 @@ class SettingsView(QtWidgets.QWidget):
 
     # ------------------------------------------------------------ 字号约束
     def _on_min_font_changed(self, v: int):
+        """只做跨字段约束（min<=max），不在这里落盘/触发扫描——那是 editingFinished 的事。"""
         if v > self.max_font_spin.value():
             self.max_font_spin.blockSignals(True)
             self.max_font_spin.setValue(v)
             self.max_font_spin.blockSignals(False)
-        self._emit_changed()
 
     def _on_max_font_changed(self, v: int):
         if v < self.min_font_spin.value():
             self.min_font_spin.blockSignals(True)
             self.min_font_spin.setValue(v)
             self.min_font_spin.blockSignals(False)
-        self._emit_changed()
 
     def _pick_model_dir(self):
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择模型目录", self.model_dir_edit.text())

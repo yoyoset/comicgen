@@ -293,6 +293,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _start_model_worker(self, keys: list[str], do_download: bool):
         if self.job_controller.is_busy():
             return
+        # 重入保护：换新线程前不等旧线程收尾，旧的 QThread 对象会在还在跑的时候被丢弃
+        # 引用——FirstRunDialog._start_scan 那边实测复现过这样会把解释器崩成
+        # 0xC0000409（见该文件的注释）。这里是同一个风险模式，照抄同样的守卫。
+        if self._m_thread is not None and self._m_thread.isRunning():
+            return
         self.model_view.set_busy(True)
         self._m_thread = QtCore.QThread()
         self._m_worker = ModelWorker(self.settings, keys, do_download)
@@ -313,6 +318,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _start_scan_worker(self):
         if self.job_controller.is_busy():
+            return
+        # 同上一处的重入保护：_on_settings_changed 每次设置变更都会调这个方法，
+        # 拖动滑块/spinbox 连续触发时旧扫描线程可能还没跑完。
+        if self._s_thread is not None and self._s_thread.isRunning():
             return
         self.model_view.set_busy(True)
         self._s_thread = QtCore.QThread()
@@ -370,6 +379,13 @@ class MainWindow(QtWidgets.QMainWindow):
     # ------------------------------------------------------------ 关闭
     def closeEvent(self, event: QtGui.QCloseEvent):
         self.job_controller.shutdown()
+        # 模型/扫描线程同样要等收尾，不能只处理翻译任务的线程——直接退出会让还在跑的
+        # QThread 对象在解释器关闭时失去引用，是 FirstRunDialog.closeEvent 已经用同样
+        # 方式防过的那类崩溃。
+        for thread in (self._m_thread, self._s_thread):
+            if thread is not None and thread.isRunning():
+                thread.quit()
+                thread.wait(3000)
         self.settings.window_geometry_hex = bytes(self.saveGeometry().toHex()).decode()
         self.settings.save()
         super().closeEvent(event)
