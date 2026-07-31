@@ -438,3 +438,56 @@ def test_run_detaches_logging_handlers_after_completion(tmp_path, monkeypatch):
     cfg = Config(translator="mock", source_lang="ja")
     Runner(cfg).run(str(input_dir), str(output_dir))
     assert len(pipeline_logger.handlers) == before
+
+
+# ---------------------------------------------------------------- job.json 快照
+
+
+def test_run_writes_job_snapshot_with_stage_timings(tmp_path, monkeypatch):
+    """2.3：job.json 要记录完整的 config 快照、app 版本号，以及每个实际跑过的阶段
+    的耗时——之前 pages.json 只记 input 一个字段，出问题后不知道当时用的是什么配置。
+    """
+    _make_fake_pipeline(monkeypatch)
+    input_dir = _make_input_folder(tmp_path, n=2)
+    output_dir = tmp_path / "output"
+
+    cfg = Config(translator="mock", source_lang="ja", det_threshold=0.42)
+    Runner(cfg).run(str(input_dir), str(output_dir))
+
+    job_data = json.loads((output_dir / "job.json").read_text(encoding="utf-8"))
+    assert job_data["config"]["det_threshold"] == 0.42
+    assert job_data["config"]["translator"] == "mock"
+    assert job_data["app_version"]
+    assert set(job_data["stages"].keys()) == {"detect", "ocr", "translate", "render"}
+    for stage_info in job_data["stages"].values():
+        assert stage_info["page_count"] == 2
+        assert stage_info["duration_s"] >= 0
+    assert isinstance(job_data["resolved_model_paths"], dict)
+
+
+def test_run_writes_job_snapshot_even_when_every_page_fails(tmp_path, monkeypatch):
+    """每一页在检测阶段都失败（per-page try/except 兜底，不会让 run() 整个抛出），
+    job.json 仍然要落盘，且能看到 detect 阶段确实跑完了（page_count 反映的是
+    "跑过几页"，不是"成功几页"——成功与否是 pages.json/JobReport 的职责）。
+    """
+    import comic_gen.pipeline.detect as detect_mod
+
+    class BoomDetector:
+        def __init__(self, *a, **k):
+            pass
+
+        def detect(self, image):
+            raise RuntimeError("模拟检测崩溃")
+
+    monkeypatch.setattr(detect_mod, "ComicDetector", BoomDetector)
+
+    input_dir = _make_input_folder(tmp_path, n=1)
+    output_dir = tmp_path / "output"
+    cfg = Config(translator="mock", source_lang="ja")
+    Runner(cfg).run(str(input_dir), str(output_dir))  # 检测失败但不会抛出（per-page 兜底）
+
+    job_data = json.loads((output_dir / "job.json").read_text(encoding="utf-8"))
+    assert job_data["config"]["translator"] == "mock"
+    assert job_data["stages"]["detect"]["page_count"] == 1
+    # 后续阶段（OCR/翻译/渲染）因为没有页面进入 STATUS_DETECTED，todo 为空，不记录耗时
+    assert "ocr" not in job_data["stages"]

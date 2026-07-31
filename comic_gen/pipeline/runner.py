@@ -9,14 +9,16 @@
 from __future__ import annotations
 
 import shutil
+import time
 from pathlib import Path
 from typing import Callable
 
 from PIL import Image
 
+from .. import __version__
 from ..core.config import Config
 from ..core.errors import OutputError, Stage
-from ..core.job import JobReport
+from ..core.job import JobReport, build_job_snapshot
 from ..core.models import (
     STATUS_DETECTED,
     STATUS_OCRED,
@@ -161,6 +163,28 @@ class Runner:
         except Exception:
             return {}
 
+    @staticmethod
+    def _job_snapshot_file(work_dir: Path) -> Path:
+        return work_dir / "job.json"
+
+    def _resolved_model_paths_snapshot(self) -> dict[str, str]:
+        """本次任务要用的每个模型，实际解析到的绝对路径——纯文件系统查询，不加载
+        模型。和 _go_offline_if_ready 用的是同一套 resolve_status/_needed_model_keys，
+        只是这里要留痕迹而不是只用来判断能不能离线。
+        """
+        from ..core.model_locator import resolve_status
+
+        result = {}
+        for key in self._needed_model_keys():
+            st = resolve_status(key, bindings=self.cfg.model_paths)
+            if st.path is not None:
+                result[key] = str(st.path)
+        return result
+
+    def _save_job_snapshot(self, work_dir: Path, resolved_model_paths: dict, stages: dict):
+        snapshot = build_job_snapshot(self.cfg, __version__, resolved_model_paths, stages)
+        save_json(snapshot, self._job_snapshot_file(work_dir))
+
     # ------------------------------------------------------------ 主流程
     def run(self, input_path: str | Path, output_path: str | Path | None = None,
             progress=None, rerender: bool = False, load_cb=None,
@@ -226,6 +250,15 @@ class Runner:
         self._save_pages(work_dir, pages, input_path)
         self.log(f"共 {len(pages)} 页，工作目录: {work_dir}")
 
+        # job.json：产生这批结果的完整配置快照 + 各模型实际解析到的路径 + 各阶段
+        # 耗时。之前 pages.json 只记了 input 一个字段，出问题后无法知道当时用的
+        # 是哪个引擎/阈值/字体/DPI，或者某个模型实际从哪个路径加载——这里补上。
+        # 先写一版（此时 stages 还是空的），任一阶段崩溃/被取消，磁盘上至少留着
+        # "本次任务请求的是什么配置"这份记录。
+        resolved_model_paths = self._resolved_model_paths_snapshot()
+        stage_timings: dict[str, dict] = {}
+        self._save_job_snapshot(work_dir, resolved_model_paths, stage_timings)
+
         page_img = {p.image: path for p, path in zip(pages, loaded.pages)}
 
         def open_page(p: Page) -> Image.Image:
@@ -245,6 +278,7 @@ class Runner:
         # 1. 检测
         todo = [p for p in pages if p.status == STATUS_PENDING]
         if todo:
+            stage_start = time.monotonic()
             from .detect import reading_order
 
             det = self._get_detector()
@@ -265,10 +299,15 @@ class Runner:
                     self.log(f"[警告] {p.image} 检测失败: {e}")
                 self._save_pages(work_dir, pages, input_path)
                 self._progress(progress, "detect", i + 1, len(todo))
+            stage_timings[Stage.DETECT.value] = {
+                "duration_s": round(time.monotonic() - stage_start, 2), "page_count": len(todo),
+            }
+            self._save_job_snapshot(work_dir, resolved_model_paths, stage_timings)
 
         # 2. OCR
         todo = [p for p in pages if p.status == STATUS_DETECTED]
         if todo:
+            stage_start = time.monotonic()
             ocr = self._get_ocr()
             for i, p in enumerate(todo):
                 if cancelled():
@@ -285,10 +324,15 @@ class Runner:
                     self.log(f"[警告] {p.image} OCR 失败: {e}")
                 self._save_pages(work_dir, pages, input_path)
                 self._progress(progress, "ocr", i + 1, len(todo))
+            stage_timings[Stage.OCR.value] = {
+                "duration_s": round(time.monotonic() - stage_start, 2), "page_count": len(todo),
+            }
+            self._save_job_snapshot(work_dir, resolved_model_paths, stage_timings)
 
         # 3. 翻译
         todo = [p for p in pages if p.status == STATUS_OCRED]
         if todo:
+            stage_start = time.monotonic()
             translator = self._get_translator()
             for i, p in enumerate(todo):
                 if cancelled():
@@ -319,10 +363,15 @@ class Runner:
                 # 阶段（检测/OCR/渲染）保持一致。
                 self._save_pages(work_dir, pages, input_path)
                 self._progress(progress, "translate", i + 1, len(todo))
+            stage_timings[Stage.TRANSLATE.value] = {
+                "duration_s": round(time.monotonic() - stage_start, 2), "page_count": len(todo),
+            }
+            self._save_job_snapshot(work_dir, resolved_model_paths, stage_timings)
 
         # 4. 抹字 + 渲染
         todo = [p for p in pages if p.status == STATUS_TRANSLATED]
         if todo:
+            stage_start = time.monotonic()
             from .render import render_page
 
             inpainter = self._get_inpainter()
@@ -351,6 +400,10 @@ class Runner:
                     self.log(f"[警告] {p.image} 抹字渲染失败: {e}")
                 self._save_pages(work_dir, pages, input_path)
                 self._progress(progress, "render", i + 1, len(todo))
+            stage_timings[Stage.RENDER.value] = {
+                "duration_s": round(time.monotonic() - stage_start, 2), "page_count": len(todo),
+            }
+            self._save_job_snapshot(work_dir, resolved_model_paths, stage_timings)
 
         result = pack_output(loaded, trans_dir, output_path, pdf_dpi=self.cfg.pdf_dpi, log=self.log)
         report = JobReport.from_pages(pages, result)

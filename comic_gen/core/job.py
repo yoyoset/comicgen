@@ -1,6 +1,7 @@
 """单次翻译任务的请求与结果。Qt-free，供 UI 与测试共用。"""
 from __future__ import annotations
 
+import dataclasses
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -86,6 +87,22 @@ class JobReport:
             failed_pages=[],
             summary="已停止。当前进度已保存，可重新运行以继续。",
         )
+
+
+def build_job_snapshot(cfg, app_version: str, resolved_model_paths: dict, stages: dict) -> dict:
+    """构造要写进 <work_dir>/job.json 的快照：产生这批结果的完整配置 + 各模型实际
+    解析到的绝对路径 + 各阶段耗时。纯函数，不做任何 IO。
+
+    之前 pages.json 只记了 input 一个字段，出问题后无法知道当时用的是哪个翻译
+    引擎、检测阈值、字体、PDF DPI，或者某个模型实际是从哪个路径加载的——这是事后
+    诊断的空白。cfg 用 dataclasses.asdict 展开，不需要 cfg 自己知道怎么序列化。
+    """
+    return {
+        "config": dataclasses.asdict(cfg),
+        "app_version": app_version,
+        "resolved_model_paths": dict(resolved_model_paths),
+        "stages": dict(stages),
+    }
 
 
 def resolve_pages_json(work_dir_or_output: Path) -> Path:
