@@ -173,6 +173,14 @@ class Runner:
         以便重新解包出干净的原图供抹字/渲染使用。
         """
         input_path = Path(input_path)
+        # 覆盖保护要在解包/建目录之前做，越早拒绝越好。output_path 为 None 时会走
+        # default_output_path，那条路径固定是"<输入>_translated"形式的兄弟路径，
+        # 结构上不可能和输入冲突，不需要在算出真实 loaded 之前单独检查；只有用户
+        # 显式指定了 output_path 才有冲突的可能，这里能在触碰任何文件前先挡掉。
+        # 旧实现是在 load_input()（已经清空/重新解包 _extract）之后才检查，晚了。
+        if output_path is not None:
+            self._check_output_safe(input_path, Path(output_path))
+
         self._go_offline_if_ready()
         work_dir = Path(work_dir_override) if work_dir_override else self._work_dir(input_path, output_path)
         extract_dir = work_dir / "_extract"
@@ -191,7 +199,6 @@ class Runner:
         if output_path is None:
             output_path = default_output_path(loaded)
         output_path = Path(output_path)
-        self._check_output_safe(input_path, output_path)
         trans_dir = ensure_dir(work_dir / "translated")
 
         pages = self._init_pages(loaded, work_dir, rerender)
@@ -354,12 +361,17 @@ class Runner:
 
     @staticmethod
     def _check_output_safe(input_path: Path, output_path: Path):
-        """防止输出覆盖原图源。"""
+        """防止输出覆盖原图源。
+
+        路径解析失败时必须拒绝而不是放行——之前 `except Exception: return` 是
+        "测不出来就当作安全"，等于这条防线在最需要它的异常路径上失效。测不出来
+        就应该拒绝，让用户看到明确的错误而不是可能覆盖原图。
+        """
         try:
             ip = input_path.resolve()
             op = output_path.resolve()
-        except Exception:
-            return
+        except Exception as e:
+            raise ValueError(f"无法校验输出路径是否安全（{e}），已阻止。请检查路径是否有效。") from e
         if op == ip:
             raise ValueError("输出路径与输入相同，会覆盖原图，已阻止。请指定其它输出路径。")
         if input_path.is_dir() and ip in op.parents:

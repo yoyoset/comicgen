@@ -64,6 +64,43 @@ def test_check_output_safe_different_dirs():
         runner._check_output_safe(input_dir, output_dir)
 
 
+def test_check_output_safe_fails_closed_on_resolve_error():
+    """0.5 回归测试：路径解析失败必须拒绝，不能"测不出来就当安全放行"。
+
+    旧实现是 `except Exception: return`——异常路径反而是这道防线最该生效、
+    却恰好失效的地方。用一个 resolve() 必炸的假路径对象验证现在会拒绝。
+    """
+
+    class BoomPath:
+        def resolve(self):
+            raise OSError("模拟路径解析失败")
+
+    with pytest.raises(ValueError, match="无法校验输出路径是否安全"):
+        Runner._check_output_safe(BoomPath(), Path("/tmp/whatever"))
+
+
+def test_run_rejects_conflicting_output_before_any_extraction(tmp_path, monkeypatch):
+    """0.5 回归测试：输出路径与输入冲突时，必须在碰任何文件之前就拒绝。
+
+    旧实现是在 load_input()（此时已经清空/重新解包了 _extract 目录）之后才检查——
+    用一个"只要被调用就报错"的假 load_input 验证它现在从未被触发到。
+    """
+    import comic_gen.pipeline.runner as runner_mod
+
+    def must_not_be_called(*a, **k):
+        raise AssertionError("load_input 不应该被调用：安全检查应该在此之前就失败")
+
+    monkeypatch.setattr(runner_mod, "load_input", must_not_be_called)
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "a.png").touch()
+
+    runner = Runner(Config())
+    with pytest.raises(ValueError, match="覆盖原图"):
+        runner.run(str(input_dir), str(input_dir))  # 输出 == 输入
+
+
 def test_select_drawable_regions_keeps_only_translated():
     """有原文有译文 -> 抹字+重绘；有原文无译文 -> 原样保留，不进 drawable。"""
     regions = [
