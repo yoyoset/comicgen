@@ -1,6 +1,9 @@
 """QThread 工作对象：桥接 core/pipeline 与 Qt 信号。不含业务决策，只做调用转发。"""
 from __future__ import annotations
 
+import threading
+import traceback
+
 from PySide6 import QtCore
 
 from ..core.errors import ComicGenError, format_job_failure  # noqa: F401 (re-export for callers)
@@ -61,11 +64,17 @@ class ModelWorker(QtCore.QObject):
     log = QtCore.Signal(str)
     finished = QtCore.Signal(str)
 
-    def __init__(self, settings: AppSettings, keys: list[str], do_download: bool):
+    def __init__(self, settings: AppSettings, keys: list[str], do_download: bool,
+                 cancel_event: threading.Event | None = None):
         super().__init__()
         self.settings = settings
         self.keys = keys
         self.do_download = do_download
+        # 协作式取消：只在"开始下一个模型之前"检查，不能打断正在进行的单次下载
+        # （huggingface_hub/llama_cpp 的下载调用是阻塞的 C 级调用，没有可安全中断的
+        # 钩子）。批量补全多个模型时，用户至少能在当前这个下完后叫停，好过完全没有
+        # 取消能力、只能干等或强杀进程。
+        self.cancel_event = cancel_event
 
     @QtCore.Slot()
     def run(self):
@@ -98,22 +107,29 @@ class ModelWorker(QtCore.QObject):
                     from ..pipeline.inpaint import Inpainter
                     Inpainter("cuda", model_path=bindings.get("lama"))
 
-            for key in self.keys:
+            total = len(self.keys)
+            for i, key in enumerate(self.keys, start=1):
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    self.log.emit(f"已停止（用户取消，剩余 {total - i + 1} 个未处理）")
+                    msgs.append(f"已停止，剩余 {total - i + 1} 个模型未处理")
+                    break
                 spec = MODEL_MANIFEST[key]
                 cached = is_model_cached(key, model_dir=self.settings.model_dir, bindings=bindings)
                 if cached:
                     msgs.append(f"[OK] {spec.label}：已有（复用）")
-                    self.log.emit(f"{spec.label} 已有")
+                    self.log.emit(f"({i}/{total}) {spec.label} 已有")
                     continue
                 if not self.do_download:
                     msgs.append(f"[缺] {spec.label}（{spec.approx_size}）：未下载（仅检查）")
                     continue
-                self.log.emit(f"下载 {spec.label}（{spec.approx_size}）…")
+                self.log.emit(f"({i}/{total}) 下载 {spec.label}（{spec.approx_size}）…")
                 try:
                     build(key)
                     msgs.append(f"[OK] {spec.label}：已下载")
+                    self.log.emit(f"({i}/{total}) {spec.label} 下载完成")
                 except Exception as e:
                     msgs.append(f"[FAIL] {spec.label}：{e}")
+                    self.log.emit(f"({i}/{total}) {spec.label} 下载失败：{e}")
 
             self.finished.emit("\n".join(msgs))
         except Exception as e:

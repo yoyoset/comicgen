@@ -20,6 +20,7 @@ class ModelView(QtWidgets.QWidget):
     scanRequested = QtCore.Signal()
     downloadRequested = QtCore.Signal(str)              # key
     downloadAllMissingRequested = QtCore.Signal()
+    cancelDownloadRequested = QtCore.Signal()
     bindRequested = QtCore.Signal(str, str)              # key, 已通过 validate_candidate 的路径
     clearBindingRequested = QtCore.Signal(str)           # key
     dedupeRequested = QtCore.Signal(str)                 # key
@@ -44,6 +45,11 @@ class ModelView(QtWidgets.QWidget):
         self.download_all_btn = QtWidgets.QPushButton("补全全部缺失")
         self.download_all_btn.clicked.connect(self.downloadAllMissingRequested)
         top.addWidget(self.download_all_btn)
+        self.cancel_download_btn = QtWidgets.QPushButton("停止下载")
+        self.cancel_download_btn.setEnabled(False)
+        self.cancel_download_btn.setToolTip("只能在当前这个模型下载完成后停止，无法打断正在进行的单次下载")
+        self.cancel_download_btn.clicked.connect(self._on_cancel_clicked)
+        top.addWidget(self.cancel_download_btn)
         lay.addLayout(top)
 
         self._keys = list(MODEL_MANIFEST)
@@ -156,10 +162,15 @@ class ModelView(QtWidgets.QWidget):
     def set_busy(self, busy: bool):
         self.scan_btn.setEnabled(not busy)
         self.download_all_btn.setEnabled(not busy)
+        self.cancel_download_btn.setEnabled(busy)
         for widgets in self._row_widgets.values():
             for name in ("locate_btn", "download_btn", "more_btn"):
                 if name in widgets:
                     widgets[name].setEnabled(not busy)
+
+    def _on_cancel_clicked(self):
+        self.cancel_download_btn.setEnabled(False)
+        self.cancelDownloadRequested.emit()
 
     def refresh(self, statuses: dict[str, ModelStatus], dupes: dict[str, list] | None = None):
         self._statuses = statuses

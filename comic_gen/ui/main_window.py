@@ -1,6 +1,7 @@
 """组合根：只负责造零件、接线、菜单/状态栏。不含业务决策——那些在 JobController/core 里。"""
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -31,6 +32,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._pending_request: JobRequest | None = None  # 当前提交给 controller 的请求，finished 时用于记录
         self._m_thread: QtCore.QThread | None = None
         self._m_worker: ModelWorker | None = None
+        self._m_cancel_event: threading.Event | None = None
         self._s_thread: QtCore.QThread | None = None
         self._s_worker: ScanWorker | None = None
 
@@ -96,6 +98,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.model_view.scanRequested.connect(self._start_scan_worker)
         self.model_view.downloadRequested.connect(lambda k: self._start_model_worker([k], True))
         self.model_view.downloadAllMissingRequested.connect(self._on_download_all_missing)
+        self.model_view.cancelDownloadRequested.connect(self._on_cancel_download)
         self.model_view.bindRequested.connect(self._on_model_bind)
         self.model_view.clearBindingRequested.connect(self._on_model_clear_binding)
         self.model_view.dedupeRequested.connect(self._on_model_dedupe)
@@ -332,13 +335,19 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._m_thread is not None and self._m_thread.isRunning():
             return
         self.model_view.set_busy(True)
+        self._m_cancel_event = threading.Event()
         self._m_thread = QtCore.QThread()
-        self._m_worker = ModelWorker(self.settings, keys, do_download)
+        self._m_worker = ModelWorker(self.settings, keys, do_download, self._m_cancel_event)
         self._m_worker.moveToThread(self._m_thread)
         self._m_thread.started.connect(self._m_worker.run)
+        self._m_worker.log.connect(self.model_view.show_status)
         self._m_worker.finished.connect(self._on_model_done)
         self._m_worker.finished.connect(self._m_thread.quit)
         self._m_thread.start()
+
+    def _on_cancel_download(self):
+        if self._m_cancel_event is not None:
+            self._m_cancel_event.set()
 
     def _on_download_all_missing(self):
         missing = self.model_view.missing_keys()
@@ -412,6 +421,8 @@ class MainWindow(QtWidgets.QMainWindow):
     # ------------------------------------------------------------ 关闭
     def closeEvent(self, event: QtGui.QCloseEvent):
         self.job_controller.shutdown()
+        if self._m_cancel_event is not None:
+            self._m_cancel_event.set()
         # 模型/扫描线程同样要等收尾，不能只处理翻译任务的线程——直接退出会让还在跑的
         # QThread 对象在解释器关闭时失去引用，是 FirstRunDialog.closeEvent 已经用同样
         # 方式防过的那类崩溃。
