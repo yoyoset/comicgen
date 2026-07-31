@@ -102,7 +102,7 @@ class _LlamaGGUFTranslator(BaseTranslator):
     top_p: float = 1.0
 
     def __init__(self, cfg: Config):
-        # 让 llama_cpp 的 CUDA 后端能找到 nvidia-* pip 包里的 CUDA 运行时 DLL
+        # 让 llama_cpp 的 CUDA 后端能找到 torch 自带的 CUDA 运行时 DLL（torch/lib）
         try:
             from ._cuda_runtime import preload_cuda_runtime
             preload_cuda_runtime()

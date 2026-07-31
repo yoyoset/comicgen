@@ -27,14 +27,12 @@ dependencies = [
 
 [project.optional-dependencies]
 # 本地翻译引擎（Sakura 日译中 + 通用多语言，均为 GGUF，走 llama.cpp；
-# Windows CUDA 预编译轮子安装见 README）
+# Windows CUDA 预编译轮子安装见 README）。CUDA 运行时 DLL 借用 torch 自带的那一套
+# （见 pipeline/_cuda_runtime.py），不再单独装 nvidia-*-cu12 系列 pip 包——
+# 这几个包此前也从未真正被 README 的安装步骤用到过（README 装的是 abetlen 预编译的
+# cu124 wheel，不依赖它们），是纯粹的死重量。
 local-llm = [
     "llama-cpp-python",
-    "nvidia-cuda-runtime-cu12",
-    "nvidia-cublas-cu12",
-    "nvidia-cuda-nvrtc-cu12",
-    "nvidia-cufft-cu12",
-    "nvidia-nvjitlink-cu12",
 ]
 # 离线测试（纯函数、无模型、无网络）
 test = [
