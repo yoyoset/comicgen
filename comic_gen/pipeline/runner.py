@@ -44,44 +44,77 @@ class Runner:
         self.cfg = cfg or Config()
         self.log = log
         self._detector = None
+        self._detector_sig = None
         self._ocr = None
+        self._ocr_sig = None
         self._inpainter = None
+        self._inpainter_sig = None
         self._translator = None
+        self._translator_sig = None
 
     # ------------------------------------------------------------ 懒加载模型
+    def _get_or_rebuild(self, cache_attr: str, sig_attr: str, sig, factory):
+        """按依赖字段的签名判断缓存是否还有效，签名变了就重建。
+
+        JobController 复用同一个 Runner、只换 cfg（改设置不重启整个应用），旧实现只判
+        `is None`，等于「只要建过一次就永远不重建」——实测复现：源语言从日文切到英文后
+        再跑一次，_get_ocr() 返回的还是按日文构造的 manga-ocr 实例，英文页被喂进日文模型；
+        改检测阈值/设备/模型绑定同样不生效。这里换成"每次访问都比对签名"，比只在 __init__
+        判断更彻底，也不需要每个设置项单独写一处失效逻辑。
+        """
+        if getattr(self, cache_attr) is None or getattr(self, sig_attr) != sig:
+            setattr(self, cache_attr, factory())
+            setattr(self, sig_attr, sig)
+        return getattr(self, cache_attr)
+
     def _get_detector(self):
-        if self._detector is None:
+        sig = (self.cfg.model_paths.get("detect"), self.cfg.detector_repo,
+               self.cfg.device, self.cfg.det_threshold)
+
+        def factory():
             from .detect import ComicDetector
 
             self.log("加载检测模型…")
             repo = self.cfg.model_paths.get("detect") or self.cfg.detector_repo
-            self._detector = ComicDetector(repo, self.cfg.device, self.cfg.det_threshold)
-        return self._detector
+            return ComicDetector(repo, self.cfg.device, self.cfg.det_threshold)
+
+        return self._get_or_rebuild("_detector", "_detector_sig", sig, factory)
 
     def _get_ocr(self):
-        if self._ocr is None:
+        # OcrEngine.__init__ 按 source_lang 分支选 manga-ocr / EasyOCR，且分别绑定
+        # ocr_ja/ocr_other 两个不同的模型路径——这三项任一变化都必须重建。
+        sig = (self.cfg.source_lang, self.cfg.model_paths.get("ocr_ja"),
+               self.cfg.model_paths.get("ocr_other"))
+
+        def factory():
             from .ocr import OcrEngine
 
             self.log("加载 OCR 模型…")
-            self._ocr = OcrEngine(self.cfg)
-        return self._ocr
+            return OcrEngine(self.cfg)
+
+        return self._get_or_rebuild("_ocr", "_ocr_sig", sig, factory)
 
     def _get_inpainter(self):
-        if self._inpainter is None:
+        sig = (self.cfg.device, self.cfg.model_paths.get("lama"))
+
+        def factory():
             from .inpaint import Inpainter
 
             self.log("加载抹字模型…")
-            self._inpainter = Inpainter(self.cfg.device, model_path=self.cfg.model_paths.get("lama"))
-        return self._inpainter
+            return Inpainter(self.cfg.device, model_path=self.cfg.model_paths.get("lama"))
+
+        return self._get_or_rebuild("_inpainter", "_inpainter_sig", sig, factory)
 
     def _get_translator(self):
-        name = self.cfg.translator
-        if self._translator is None or getattr(self._translator, "name", None) != name:
+        sig = self.cfg.translator
+
+        def factory():
             from .translate import get_translator
 
-            self.log(f"加载翻译引擎: {name}")
-            self._translator = get_translator(self.cfg)
-        return self._translator
+            self.log(f"加载翻译引擎: {self.cfg.translator}")
+            return get_translator(self.cfg)
+
+        return self._get_or_rebuild("_translator", "_translator_sig", sig, factory)
 
     def _needed_model_keys(self) -> list[str]:
         keys = ["detect", "lama"]
@@ -196,6 +229,7 @@ class Runner:
                     p.regions = reading_order(det.detect(open_page(p)), rtl=rtl)
                     p.width, p.height = Image.open(page_img[p.image]).size
                     p.status = STATUS_DETECTED
+                    p.error = ""
                 except Exception as e:
                     p.error = f"检测失败: {e}"
                     self.log(f"[警告] {p.image} 检测失败: {e}")
@@ -213,6 +247,7 @@ class Runner:
                 try:
                     ocr.recognize_regions(open_page(p), p.regions)
                     p.status = STATUS_OCRED
+                    p.error = ""
                 except Exception as e:
                     p.error = f"OCR 失败: {e}"
                     self.log(f"[警告] {p.image} OCR 失败: {e}")
@@ -236,13 +271,19 @@ class Runner:
                         for r, t in zip(regions, results):
                             r.translated_text = t
                         p.status = STATUS_TRANSLATED
+                        p.error = ""
                     except Exception as e:
                         p.error = f"翻译失败: {e}"
                         self.log(f"[警告] {p.image} 翻译失败: {e}")
                 else:
                     p.status = STATUS_TRANSLATED
+                    p.error = ""
+                # 翻译是四阶段里最贵的一步（LLM 推理，一页数秒到数十秒），之前这里的
+                # _save_pages 在循环外，只在整批翻完后落一次盘——崩溃/断电/强杀会丢掉
+                # 这一整批已经跑完的译文，重启后要全部重译。改成逐页落盘，和另外三个
+                # 阶段（检测/OCR/渲染）保持一致。
+                self._save_pages(work_dir, pages, input_path)
                 self._progress(progress, "translate", i + 1, len(todo))
-            self._save_pages(work_dir, pages, input_path)
 
         # 4. 抹字 + 渲染
         todo = [p for p in pages if p.status == STATUS_TRANSLATED]
@@ -267,13 +308,14 @@ class Runner:
                     ensure_dir(out_path.parent)
                     out_img.save(out_path)
                     p.status = STATUS_RENDERED
+                    p.error = ""
                 except Exception as e:
                     p.error = f"抹字渲染失败: {e}"
                     self.log(f"[警告] {p.image} 抹字渲染失败: {e}")
                 self._save_pages(work_dir, pages, input_path)
                 self._progress(progress, "render", i + 1, len(todo))
 
-        result = pack_output(loaded, trans_dir, output_path, pdf_dpi=self.cfg.pdf_dpi)
+        result = pack_output(loaded, trans_dir, output_path, pdf_dpi=self.cfg.pdf_dpi, log=self.log)
         report = JobReport.from_pages(pages, result)
         self.log(f"完成: {result}（{report.summary}）")
         return report

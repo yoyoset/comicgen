@@ -1,7 +1,9 @@
 """Tests for pipeline.runner safety checks (offline)."""
+import json
 import pytest
 from pathlib import Path
 import tempfile
+from PIL import Image
 from comic_gen.core.models import Region
 from comic_gen.pipeline.runner import Runner, select_drawable_regions
 from comic_gen.core.config import Config
@@ -91,3 +93,231 @@ def test_select_drawable_regions_all_translated():
 def test_select_drawable_regions_whitespace_only_treated_as_empty():
     regions = [Region(bbox=[0, 0, 10, 10], source_text="原文", translated_text="   ")]
     assert select_drawable_regions(regions) == []
+
+
+# ---------------------------------------------------------------- _get_or_rebuild
+
+
+def test_get_or_rebuild_reuses_when_signature_unchanged():
+    runner = Runner(Config())
+    calls = []
+
+    def factory():
+        calls.append(1)
+        return object()
+
+    a = runner._get_or_rebuild("_detector", "_detector_sig", "sig-a", factory)
+    b = runner._get_or_rebuild("_detector", "_detector_sig", "sig-a", factory)
+    assert a is b
+    assert len(calls) == 1
+
+
+def test_get_or_rebuild_rebuilds_when_signature_changes():
+    """这是 0.1 的核心机制：签名变了必须重建，不能只判 is None。"""
+    runner = Runner(Config())
+    calls = []
+
+    def factory():
+        calls.append(1)
+        return object()
+
+    a = runner._get_or_rebuild("_detector", "_detector_sig", "sig-a", factory)
+    b = runner._get_or_rebuild("_detector", "_detector_sig", "sig-b", factory)
+    assert a is not b
+    assert len(calls) == 2
+
+
+def test_get_ocr_rebuilds_when_source_lang_changes(monkeypatch):
+    """实测复现的真 bug：源语言从日文切到英文再跑一次，旧实现返回的还是按日文构造
+    的 manga-ocr 实例（只判 is None，从不检查 cfg 是否变了）。用假 OcrEngine 验证
+    _get_ocr 现在会按 source_lang 重建，不需要真的加载 manga-ocr/easyocr。
+    """
+    import comic_gen.pipeline.ocr as ocr_mod
+
+    created_with = []
+
+    class FakeOcrEngine:
+        def __init__(self, cfg):
+            created_with.append(cfg.source_lang)
+
+    monkeypatch.setattr(ocr_mod, "OcrEngine", FakeOcrEngine)
+
+    runner = Runner(Config(source_lang="ja"))
+    ocr_ja = runner._get_ocr()
+    assert created_with == ["ja"]
+
+    runner.cfg = Config(source_lang="en")
+    ocr_en = runner._get_ocr()
+    assert created_with == ["ja", "en"]
+    assert ocr_en is not ocr_ja
+
+    # 语言不变时不重建
+    runner._get_ocr()
+    assert created_with == ["ja", "en"]
+
+
+def test_get_detector_rebuilds_when_threshold_changes(monkeypatch):
+    import comic_gen.pipeline.detect as detect_mod
+
+    created_with = []
+
+    class FakeDetector:
+        def __init__(self, repo, device, threshold):
+            created_with.append(threshold)
+
+    monkeypatch.setattr(detect_mod, "ComicDetector", FakeDetector)
+
+    runner = Runner(Config(det_threshold=0.3))
+    d1 = runner._get_detector()
+    assert created_with == [0.3]
+
+    runner.cfg = Config(det_threshold=0.5)
+    d2 = runner._get_detector()
+    assert created_with == [0.3, 0.5]
+    assert d2 is not d1
+
+
+def test_get_inpainter_rebuilds_when_model_binding_changes(monkeypatch):
+    import comic_gen.pipeline.inpaint as inpaint_mod
+
+    created_with = []
+
+    class FakeInpainter:
+        def __init__(self, device, model_path=None):
+            created_with.append(model_path)
+
+    monkeypatch.setattr(inpaint_mod, "Inpainter", FakeInpainter)
+
+    runner = Runner(Config(model_paths={}))
+    i1 = runner._get_inpainter()
+    assert created_with == [None]
+
+    runner.cfg = Config(model_paths={"lama": "F:/models/big-lama.pt"})
+    i2 = runner._get_inpainter()
+    assert created_with == [None, "F:/models/big-lama.pt"]
+    assert i2 is not i1
+
+
+# ---------------------------------------------------------------- run() 编排（用假引擎，不加载真模型）
+
+
+def _make_fake_pipeline(monkeypatch):
+    """把 detect/ocr/inpaint/render 四个阶段换成不碰真模型的假实现，只留 run() 的编排逻辑。"""
+    import comic_gen.pipeline.detect as detect_mod
+    import comic_gen.pipeline.inpaint as inpaint_mod
+    import comic_gen.pipeline.ocr as ocr_mod
+    import comic_gen.pipeline.render as render_mod
+
+    class FakeDetector:
+        def __init__(self, *a, **k):
+            pass
+
+        def detect(self, image):
+            return [Region(bbox=[0, 0, 10, 10], direction="horizontal")]
+
+    class FakeOcr:
+        def __init__(self, *a, **k):
+            pass
+
+        def recognize_regions(self, image, regions):
+            for r in regions:
+                r.source_text = "テスト"
+
+    class FakeInpainter:
+        def __init__(self, *a, **k):
+            pass
+
+        def inpaint_page(self, image, regions):
+            return image.copy()
+
+    def fake_render_page(image, regions, cfg):
+        return image.copy()
+
+    monkeypatch.setattr(detect_mod, "ComicDetector", FakeDetector)
+    monkeypatch.setattr(ocr_mod, "OcrEngine", FakeOcr)
+    monkeypatch.setattr(inpaint_mod, "Inpainter", FakeInpainter)
+    monkeypatch.setattr(render_mod, "render_page", fake_render_page)
+
+
+def _make_input_folder(tmp_path, n=3):
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    for i in range(n):
+        Image.new("RGB", (20, 20), "white").save(input_dir / f"page_{i}.png")
+    return input_dir
+
+
+def test_run_saves_translate_progress_incrementally(tmp_path, monkeypatch):
+    """0.2 回归测试：翻译阶段中途被"外部强杀"打断，已翻完的页必须已经落盘。
+
+    旧实现的 _save_pages 在翻译循环外，只在整批翻完后存一次——循环中途异常退出会
+    丢失已经跑完的那些页的译文。用 KeyboardInterrupt（不会被阶段内的
+    `except Exception` 捕获，模拟强制中断/崩溃）让 run() 在处理第二页时直接中止，
+    再检查落盘的 pages.json 是否已经记录了第一页的翻译结果。
+    """
+    _make_fake_pipeline(monkeypatch)
+    input_dir = _make_input_folder(tmp_path, n=3)
+    output_dir = tmp_path / "output"
+
+    class CrashOnSecondPageTranslator:
+        name = "fake"
+
+        def __init__(self):
+            self.calls = 0
+
+        def translate(self, texts, cfg):
+            self.calls += 1
+            if self.calls == 2:
+                raise KeyboardInterrupt("模拟强制中断")
+            return [f"译:{t}" for t in texts]
+
+    cfg = Config(translator="mock", source_lang="ja")
+    runner = Runner(cfg)
+    runner._get_translator = lambda: CrashOnSecondPageTranslator()
+
+    with pytest.raises(KeyboardInterrupt):
+        runner.run(str(input_dir), str(output_dir))
+
+    pages_data = json.loads((output_dir / "pages.json").read_text(encoding="utf-8"))
+    statuses = [p["status"] for p in pages_data["pages"]]
+    # 第一页已经翻译成功并落盘，尽管第二页把整个 run() 打断了
+    assert "translated" in statuses
+
+
+def test_run_clears_page_error_on_later_success(tmp_path, monkeypatch):
+    """0.3 回归测试：某一页第一次跑检测失败，第二次重跑成功后，error 字段必须清空，
+    否则 JobReport 会把这个已经修好的页永远算作失败（旧 bug：p.error 从不重置）。
+    """
+    _make_fake_pipeline(monkeypatch)
+    input_dir = _make_input_folder(tmp_path, n=1)
+    output_dir = tmp_path / "output"
+
+    import comic_gen.pipeline.detect as detect_mod
+
+    call_count = {"n": 0}
+
+    class FlakyDetector:
+        def __init__(self, *a, **k):
+            pass
+
+        def detect(self, image):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("第一次检测失败")
+            return [Region(bbox=[0, 0, 10, 10], direction="horizontal")]
+
+    monkeypatch.setattr(detect_mod, "ComicDetector", FlakyDetector)
+
+    cfg = Config(translator="mock", source_lang="ja")
+    runner = Runner(cfg)
+
+    # 第一次跑：检测失败，pages.json 记录 error
+    runner.run(str(input_dir), str(output_dir))
+    pages_data = json.loads((output_dir / "pages.json").read_text(encoding="utf-8"))
+    assert pages_data["pages"][0]["error"] != ""
+
+    # 第二次跑（同一个 work_dir，检测这次成功）：error 必须被清空
+    runner.run(str(input_dir), str(output_dir))
+    pages_data = json.loads((output_dir / "pages.json").read_text(encoding="utf-8"))
+    assert pages_data["pages"][0]["error"] == ""
+    assert pages_data["pages"][0]["status"] in ("translated", "rendered")
