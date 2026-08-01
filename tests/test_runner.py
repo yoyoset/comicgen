@@ -179,6 +179,30 @@ def test_get_ocr_rebuilds_when_source_lang_changes(monkeypatch):
     assert created_with == ["ja", "en"]
 
 
+def test_get_ocr_rebuilds_when_device_changes(monkeypatch):
+    """4.3 回归测试：OCR 后端现在认 cfg.device 了（registry.py 的 _wants_gpu），
+    缓存签名不带上这一项会出现同一类"改了设置不生效"的陈旧缓存 bug。
+    """
+    import comic_gen.pipeline.ocr as ocr_mod
+
+    created_with = []
+
+    class FakeOcrEngine:
+        def __init__(self, cfg):
+            created_with.append(cfg.device)
+
+    monkeypatch.setattr(ocr_mod, "OcrEngine", FakeOcrEngine)
+
+    runner = Runner(Config(source_lang="ja", device="cuda"))
+    ocr_gpu = runner._get_ocr()
+    assert created_with == ["cuda"]
+
+    runner.cfg = Config(source_lang="ja", device="cpu")
+    ocr_cpu = runner._get_ocr()
+    assert created_with == ["cuda", "cpu"]
+    assert ocr_cpu is not ocr_gpu
+
+
 def test_get_detector_rebuilds_when_threshold_changes(monkeypatch):
     import comic_gen.pipeline.detect as detect_mod
 
@@ -275,6 +299,36 @@ def test_get_translator_reuses_when_nothing_relevant_changed(monkeypatch):
     t2 = runner._get_translator()
     assert t1 is t2
     assert len(created_with) == 1
+
+
+def test_get_translator_rebuilds_when_device_changes(monkeypatch):
+    """4.3 回归测试：GGUF 引擎的 n_gpu_layers 现在认 cfg.device 了，缓存签名不带上
+    这一项，切 CPU/GPU 不会重建、白改设置——和上面 target_lang 那条是同一类 bug。
+    """
+    import comic_gen.pipeline.registry as registry_mod
+
+    created_with = []
+
+    class FakeTranslator:
+        name = "llm"
+
+        def __init__(self, cfg):
+            created_with.append(cfg.device)
+
+    monkeypatch.setattr(
+        registry_mod,
+        "TRANSLATOR_REGISTRY",
+        {"llm": registry_mod.TranslatorEntry("llm", FakeTranslator)},
+    )
+
+    runner = Runner(Config(translator="llm", source_lang="en", device="cuda"))
+    t1 = runner._get_translator()
+    assert created_with == ["cuda"]
+
+    runner.cfg = Config(translator="llm", source_lang="en", device="cpu")
+    t2 = runner._get_translator()
+    assert created_with == ["cuda", "cpu"]
+    assert t2 is not t1
 
 
 # ---------------------------------------------------------------- run() 编排（用假引擎，不加载真模型）

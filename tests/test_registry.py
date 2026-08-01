@@ -82,6 +82,72 @@ def test_ocr_backend_for_unknown_lang_returns_none():
     assert ocr_backend_for("klingon") is None
 
 
+# ---------------------------------------------------------------- device 贯通（4.3）
+# 之前 registry.py 的两个 OCR 工厂函数一个完全不认 cfg.device（manga-ocr，自己探测
+# 有没有 GPU），一个直接 torch.cuda.is_available() 无视 cfg.device（EasyOCR）——
+# 设置页选"CPU"对这两个模型都不起作用。
+
+
+def test_wants_gpu_respects_cpu_setting_even_if_cuda_available(monkeypatch):
+    import comic_gen.pipeline.registry as registry_mod
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert registry_mod._wants_gpu(Config(device="cpu")) is False
+
+
+def test_wants_gpu_false_when_cuda_requested_but_unavailable(monkeypatch):
+    import comic_gen.pipeline.registry as registry_mod
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert registry_mod._wants_gpu(Config(device="cuda")) is False
+
+
+def test_wants_gpu_true_when_cuda_requested_and_available(monkeypatch):
+    import comic_gen.pipeline.registry as registry_mod
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert registry_mod._wants_gpu(Config(device="cuda")) is True
+
+
+def test_ja_factory_passes_force_cpu_to_manga_ocr(monkeypatch):
+    import manga_ocr
+    import comic_gen.pipeline.registry as registry_mod
+
+    monkeypatch.setattr(registry_mod, "_wants_gpu", lambda cfg: False)
+    calls = []
+    monkeypatch.setattr(manga_ocr, "MangaOcr", lambda **kw: calls.append(kw))
+
+    OCR_REGISTRY["ocr_ja"].factory(Config(device="cpu"))
+    assert calls == [{"force_cpu": True}]
+
+
+def test_ja_factory_passes_model_dir_when_bound(monkeypatch):
+    import manga_ocr
+    import comic_gen.pipeline.registry as registry_mod
+
+    monkeypatch.setattr(registry_mod, "_wants_gpu", lambda cfg: True)
+    calls = []
+    monkeypatch.setattr(manga_ocr, "MangaOcr", lambda **kw: calls.append(kw))
+
+    OCR_REGISTRY["ocr_ja"].factory(Config(model_paths={"ocr_ja": "/models/manga-ocr"}))
+    assert calls == [{"force_cpu": False, "pretrained_model_name_or_path": "/models/manga-ocr"}]
+
+
+def test_other_factory_passes_wants_gpu_to_easyocr(monkeypatch):
+    import easyocr
+    import comic_gen.pipeline.registry as registry_mod
+
+    monkeypatch.setattr(registry_mod, "_wants_gpu", lambda cfg: False)
+    calls = []
+    monkeypatch.setattr(easyocr, "Reader", lambda codes, **kw: calls.append((codes, kw)))
+
+    OCR_REGISTRY["ocr_other"].factory(Config(source_lang="en", device="cpu"))
+    assert calls == [(["en"], {"gpu": False, "model_storage_directory": None})]
+
+
 # ---------------------------------------------------------------- needed_model_keys
 
 

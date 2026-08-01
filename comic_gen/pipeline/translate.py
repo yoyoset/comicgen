@@ -116,7 +116,13 @@ class _LlamaGGUFTranslator(BaseTranslator):
             ) from e
 
         path = self._resolve_model_path(cfg)
-        self.llm = Llama(model_path=path, n_ctx=4096, n_gpu_layers=-1, verbose=False)
+        # 之前硬编码 n_gpu_layers=-1（全部层丢 GPU），设置页选"CPU"对这个引擎完全
+        # 不起作用——四个模型里只有 detect/inpaint 认 cfg.device，这是另外两个漏洞
+        # 之一（另一个是 registry.py 的 OCR 后端）。cfg.device != "cuda" 时退回
+        # 0（全 CPU）；GPU 是否真的可用交给 llama_cpp 自己在加载时判断，和这里改动前
+        # 的行为一致，不新增一层探测逻辑。
+        n_gpu_layers = -1 if cfg.device == "cuda" else 0
+        self.llm = Llama(model_path=path, n_ctx=4096, n_gpu_layers=n_gpu_layers, verbose=False)
         self.cfg = cfg
 
     def _resolve_model_path(self, cfg: Config) -> str:

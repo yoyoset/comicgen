@@ -86,20 +86,39 @@ def recommended_engine(source_lang: str, default: str = "llm") -> str:
     return default
 
 
+def _wants_gpu(cfg: Config) -> bool:
+    """cfg.device 请求 GPU 且这台机器真的有 CUDA 才用 GPU——和 detect.ComicDetector
+    已经在用的同一条回退规则（请求 cuda 但没有可用设备时不崩，退回 CPU），不是
+    "cfg.device=='cuda' 就无脑传 True"。
+    """
+    if cfg.device != "cuda":
+        return False
+    import torch
+
+    return torch.cuda.is_available()
+
+
 def _build_ocr_registry() -> dict[str, OcrBackendEntry]:
     def _ja_factory(cfg: Config):
         from manga_ocr import MangaOcr
 
+        # 之前不传这个参数，MangaOcr 自己探测到有 GPU 就用——cfg.device="cpu" 时
+        # 设置页写着"推理设备：CPU"，实际这个模型仍然悄悄用了 GPU。四个模型里
+        # 只认 cfg.device 的原来只有 detect/inpaint 两个，manga-ocr/EasyOCR/llama.cpp
+        # 这三个各自忽略或硬编码，是审计里明确点出的问题。
+        want_gpu = _wants_gpu(cfg)
         model_dir = cfg.model_paths.get("ocr_ja")
-        return MangaOcr(pretrained_model_name_or_path=model_dir) if model_dir else MangaOcr()
+        kwargs = {"force_cpu": not want_gpu}
+        if model_dir:
+            kwargs["pretrained_model_name_or_path"] = model_dir
+        return MangaOcr(**kwargs)
 
     def _other_factory(cfg: Config):
         import easyocr
-        import torch
 
         code = {"en": ["en"], "zh": ["ch_sim", "en"]}.get(cfg.source_lang, ["en"])
         storage_dir = cfg.model_paths.get("ocr_other")
-        return easyocr.Reader(code, gpu=torch.cuda.is_available(), model_storage_directory=storage_dir)
+        return easyocr.Reader(code, gpu=_wants_gpu(cfg), model_storage_directory=storage_dir)
 
     return {
         "ocr_ja": OcrBackendEntry("ocr_ja", frozenset({"ja"}), _ja_factory),

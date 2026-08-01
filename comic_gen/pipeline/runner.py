@@ -93,9 +93,11 @@ class Runner:
 
     def _get_ocr(self):
         # OcrEngine.__init__ 按 source_lang 分支选 manga-ocr / EasyOCR，且分别绑定
-        # ocr_ja/ocr_other 两个不同的模型路径——这三项任一变化都必须重建。
+        # ocr_ja/ocr_other 两个不同的模型路径——这几项任一变化都必须重建。cfg.device
+        # 也要算进去（4.3 之前 registry.py 的两个 OCR 工厂函数都不认 cfg.device，
+        # 现在认了，缓存签名不带上就会出现同一类"改了设置不生效"的陈旧缓存 bug）。
         sig = (self.cfg.source_lang, self.cfg.model_paths.get("ocr_ja"),
-               self.cfg.model_paths.get("ocr_other"))
+               self.cfg.model_paths.get("ocr_other"), self.cfg.device)
 
         def factory():
             from .ocr import OcrEngine
@@ -121,9 +123,10 @@ class Runner:
         # 在构造时把 source_lang/target_lang 烤进 system_prompt（"把日文台词翻译成
         # 简体中文"这类），只换 target_lang 不换引擎名字，缓存判断不出该重建，会一直
         # 用旧语言对的 system_prompt 推理。同一个引擎名绑定的模型路径变了也要重建，
-        # 和 detector/ocr/inpainter 保持一致。
+        # 和 detector/ocr/inpainter 保持一致。cfg.device 现在也影响 GGUF 引擎的
+        # n_gpu_layers（4.3），同样要算进签名，否则切 CPU/GPU 不会重建、白改设置。
         sig = (self.cfg.translator, self.cfg.source_lang, self.cfg.target_lang,
-               self.cfg.model_paths.get(self.cfg.translator))
+               self.cfg.model_paths.get(self.cfg.translator), self.cfg.device)
 
         def factory():
             from .translate import get_translator
