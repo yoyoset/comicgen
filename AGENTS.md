@@ -66,8 +66,11 @@ comic_gen/
     ├── workers.py       QThread 工作对象（PipelineWorker/ModelWorker/ScanWorker/ReviewRerenderWorker）
     └── views/           纯视图：translate/settings/model/diagnostics/first_run_dialog/review
 entry_ui.py      EXE 入口（绝对导入；不要直接用包内 app.py 当入口）
-build_exe.spec   PyInstaller 配置
-scripts/         自测素材生成 + build_exe.ps1（打包脚本，就地换件不碰用户数据）
+build_exe.spec   PyInstaller 配置，collect_all 清单从 bundle_packages.py 导入（不在这两处各写一份）
+bundle_packages.py  build_exe.spec 的 collect_all 包清单，唯一定义
+scripts/         自测素材生成 + build_exe.ps1（打包脚本，就地换件不碰用户数据）+
+                 check_bundle_deps.py（只读诊断：collect_all 清单里的包是否还在
+                 pyproject.toml 依赖闭包里/是否还装着，发布前手动跑一遍）
 tests/sample*    自测产物（不入库）
 dist/comicgen/   EXE 产物（不入库，但其中的 settings.json 是用户数据，重新打包不会动它）
 docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)

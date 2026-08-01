@@ -2,10 +2,12 @@
 # PyInstaller 打包脚本：生成 dist\comicgen\comicgen-ui.exe（文件夹版绿色软件）
 from PyInstaller.utils.hooks import collect_all
 
+from bundle_packages import COLLECT_ALL_PACKAGES
+
 datas, binaries, hiddenimports = [], [], []
 
-# 只有 llama_cpp（GGUF 推理原生 DLL）、OCR 词典/资源、PDF 需要 collect_all 兜底：
-# 这几个包的资源文件不是常规 Python 模块，PyInstaller 的静态导入分析找不到。
+# 清单定义在 bundle_packages.py（和 scripts/check_bundle_deps.py 共用同一份，
+# 不再各写一份列表——这正是之前"两份清单没有东西保证一致"的根源）。
 #
 # PySide6/shiboken6 不在这里：collect_all("PySide6") 会强行分析 Qt 全家桶（Qt3D/QML/
 # WebEngine/Bluetooth…），代码实际只 import QtCore/QtGui/QtWidgets 三个模块（grep 可证）。
@@ -17,7 +19,7 @@ datas, binaries, hiddenimports = [], [], []
 # （nvidia-cublas-cu12 等），但 torch/lib 下已经自带同一套 DLL（cublas/cublasLt/cufft/
 # cufftw/nvrtc/nvJitLink/cudart），是重复的第二套 CUDA 栈。_cuda_runtime.py 现在改为
 # 指向 torch/lib，不再需要单独打包 nvidia.* 那五个包。
-for pkg in ("llama_cpp", "unidic_lite", "fugashi", "manga_ocr", "fitz", "easyocr", "timm"):
+for pkg in COLLECT_ALL_PACKAGES:
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
@@ -41,7 +43,6 @@ hiddenimports += [
     "manga_ocr",
     "simple_lama_inpainting",
     "easyocr",
-    "timm",
     "rarfile",
 ]
 
