@@ -6,23 +6,32 @@ build-backend = "setuptools.build_meta"
 name = "comic-gen"
 version = "0.1.0"
 description = "漫画自动翻译流水线：日文定位 → OCR → 翻译 → 抹字 → 贴回"
-requires-python = ">=3.10"
+# 只在 3.13 上开发/测试过（见 AGENTS.md 的环境说明），之前 ">=3.10" 是没实测过的
+# 猜测范围——审计明确指出这一条，"声称支持但没验证过"和"真的支持"是两回事，
+# 改回诚实的范围；哪天真在别的版本上跑通了再放开。
+requires-python = ">=3.13,<3.14"
+# 直接依赖固定到 requirements-lock.txt 里记录的、当前开发环境实测可用的精确版本
+# （15 个里原来只有 transformers/pillow 给了下限，其余 13 个完全不固定，无法复现
+# 出问题时"当时到底装的是哪个版本"）。torch/torchvision 故意只锁公开版本号
+# （不带 +cu124 本地版本标识）——PEP 440 下 "==2.6.0" 能匹配已装的 "2.6.0+cu124"
+# （用 packaging.specifiers 实测验证过），这样 AGENTS.md 里"先装 GPU 版 torch，
+# 再 pip install -e ."的两步流程不会被这里的精确匹配打断、误装成纯 CPU 版。
 dependencies = [
-    "torch",
-    "torchvision",
-    "transformers>=4.53",
-    "accelerate",
-    "safetensors",
-    "opencv-python",
-    "pillow>=10",
-    "numpy",
-    "manga-ocr",
-    "simple-lama-inpainting",
-    "huggingface_hub",
-    "PySide6",
-    "easyocr",
-    "pymupdf",
-    "rarfile",
+    "torch==2.6.0",
+    "torchvision==0.21.0",
+    "transformers==5.14.1",
+    "accelerate==1.14.0",
+    "safetensors==0.8.0",
+    "opencv-python==5.0.0.93",
+    "pillow==12.2.0",
+    "numpy==2.4.4",
+    "manga-ocr==0.1.16",
+    "simple-lama-inpainting==0.1.0",
+    "huggingface_hub==1.24.0",
+    "PySide6==6.11.1",
+    "easyocr==1.7.2",
+    "pymupdf==1.28.0",
+    "rarfile==4.3",
 ]
 
 [project.optional-dependencies]
@@ -32,11 +41,11 @@ dependencies = [
 # 这几个包此前也从未真正被 README 的安装步骤用到过（README 装的是 abetlen 预编译的
 # cu124 wheel，不依赖它们），是纯粹的死重量。
 local-llm = [
-    "llama-cpp-python",
+    "llama-cpp-python==0.3.34",
 ]
 # 离线测试（纯函数、无模型、无网络）
 test = [
-    "pytest>=7.0",
+    "pytest==9.1.1",
 ]
 
 [project.scripts]

@@ -7,6 +7,11 @@
 - Windows 11 / Python 3.13（venv 在 `.venv\`）/ RTX 3060 12GB
 - venv Python：`.\.venv\Scripts\python.exe`（所有命令用它，不要依赖系统 python）
 - torch 2.6.0+cu124（CUDA 可用）
+- `pyproject.toml` 的直接依赖已固定到实测可用的精确版本；`requirements-lock.txt`
+  是从这些直接依赖递归展开出的完整闭包快照（不是裸 `pip freeze`——这台机器的
+  venv 里还留着 Gradio 原型阶段的一堆无关包，freeze 会把那些也锁进去），出问题时
+  用它对照"当时装的到底是什么版本"，不是唯一安装步骤（torch/torchvision/
+  llama-cpp-python 仍需按下面的专用 index 安装，文件开头注释里写清楚了）。
 
 ## 常用命令
 
