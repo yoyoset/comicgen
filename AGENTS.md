@@ -81,19 +81,20 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 1. **中间产物驱动**：每页所有阶段结果存 `<工作目录>/pages.json`，含 `input` 指纹（绝对路径），指纹不符则丢弃缓存。状态机：pending→detected→ocred→translated→rendered；`rerender=True` 会把 rendered 打回 translated 强制重渲染。**四个阶段全部逐页 try + 每页落盘**，单页失败不致整阶段丢失。另有 `<工作目录>/job.json`：本次任务的完整 `Config` 快照 + 各模型实际解析到的绝对路径 + 各阶段耗时，供事后诊断（`pages.json` 只记 `input` 一项，不够定位"当时用的是什么配置"）；`<工作目录>/run.log` 是叶子模块（`ocr.py`/`translate.py`/`render.py`）通过 `infra.logging` 记的带时间戳警告/提示。
 2. **工作目录规则**：文件夹输入 → 输出目录即工作目录；压缩包/PDF 输入 → `<输出文件名去扩展>/` 为工作目录，`_extract/src` 为解包区（**每次 run 先清空再解包**，防止不同输入污染）。`Runner._check_output_safe` 阻止输出覆盖原图（同路径或输出在输入目录内）。
 3. **支持格式**：文件夹（**递归**子目录）、ZIP/CBZ、RAR/CBR（解压需系统 UnRAR，输出转 CBZ）、EPUB（按 OPF spine 排序，重打包保 mimetype 规范）、PDF（PyMuPDF 每页 @150dpi 渲染为图，输出合并回 PDF；可通过 Config.pdf_dpi 调整）。
-3. **模型懒加载 + UI 常驻**：Runner._get_* 懒加载；UI 用模块级单例 Runner，模型跨请求复用；翻译引擎按 `cfg.translator` name 切换重建，其余模型不重载。
-4. **全部本地翻译引擎**（`Config.translator`：`sakura`/`llm`/`mock`），不联网、不需要 API Key。Sakura 为日文专用（GGUF，轻小说风格），`source_lang != "ja"` 时 `pipeline.translate.engine_lang_conflict` 会拦截并提示改用 `llm`（通用多语言 GGUF）。
-5. **多语言分工**：`Config.source_lang`（ja/en/zh/other）决定 OCR 后端——日文 manga-ocr，英/中/其它 EasyOCR；翻译引擎推荐——日文 sakura，其它 llm（`pipeline.translate.ENGINE_RECOMMENDATION`，UI 源语言变化时联动改引擎下拉）。
-5a. **每个模型独立路径绑定**：`AppSettings.model_files`（manifest 键 → 绝对路径）经 `to_config()` 传进 `Config.model_paths`，是每次任务的不可变快照（不是进程级全局表——运行中改设置不会影响正在跑的任务）。解析顺序：显式绑定 → 本地缓存搜索（`core.model_locator`）→ 联网下载兜底。绑定失效（文件被移走）或大小不对，直接报错，绝不静默回落去联网下载新的顶替。
-5b. **翻译/OCR 分发走注册表**：`pipeline/registry.py` 是翻译引擎（sakura/llm/mock）和 OCR 后端（ocr_ja/ocr_other）唯一的分发数据源；`runner._needed_model_keys`、`ocr.OcrEngine.__init__` 都从这里读，不再各自硬编码 if/elif。`pipeline.translate` 里的 `get_translator`/`engine_lang_conflict`/`ENGINE_LANG_LOCK`/`ENGINE_RECOMMENDATION` 仍然可以照常导入（模块级 `__getattr__` 惰性转发到 registry.py，避免两个模块互相需要对方顶层定义造成循环导入——这是实测复现过的真崩溃，不是预防性设计）。加一个新引擎/后端只需要在 registry.py 里加一条 Entry；`ui/workers.py` 的下载面板、`ui/views/translate_view.py` 的引擎下拉框仍是各自硬编码，留到真的要加第三个引擎/后端时再一起改。
-6. **检测模型**用 `ogkalu/comic-text-and-bubble-detector`（Apache-2.0，规避 GPL 系工具的许可证风险）；类别 0=bubble 1=text_bubble 2=text_free，bubble 类丢弃。
-6. **取色**：未膨胀 mask + 腐蚀核心 + 中位数（膨胀 mask 会混入背景色导致译文发灰）。
-7. **描边策略**：仅浅色文字加黑描边（1px）；深色文字不描边（气泡内描边会糊）。
-8. **渲染字体多级兜底**：指定字体 → 常见系统 CJK 字体 → `ImageFont.load_default()`，绝不抛。
-9. **模型目录不再有冻结态特殊默认值**：冻结/开发态都用 `core.paths.detect_default_model_dir()` 探测到的 HF 缓存根，由首次运行弹窗（`ui.views.first_run_dialog`）让用户确认或改到别处。**不要**再往 `_apply_default_model_dir_for_frozen` 这类"冻结时默认用 exe 同级目录"的逻辑上加代码——那是上一版备份/还原 hack 的根因，已经删掉。重新打包用 `scripts\build_exe.ps1`（只换 exe 本体 + `_internal\`），不要直接跑裸的 PyInstaller 命令，否则 `--clean` 会清空 `dist\comicgen\` 下的 `settings.json`。
-10. **UI 输出路径**：留空=输入同级 `_translated`；可手动指定避免上传 zip 落 temp。
-11. PowerShell 控制台 GBK 显示中文日志乱码是**显示问题**，日志本身 UTF-8 正常，不要为此改代码。
-12. **校对界面**（`ui/views/review_view.py` + `app/review_session.py`）：画布上的检测框直接可点，选中后侧栏
+4. **模型懒加载 + UI 常驻**：Runner._get_* 懒加载；`ui/job_controller.py` 的 `JobController` 持有一个长期存活的 Runner 实例，模型跨请求复用；翻译引擎按 `cfg.translator` name 切换重建，其余模型不重载。
+5. **全部本地翻译引擎**（`Config.translator`：`sakura`/`llm`/`mock`），不联网、不需要 API Key。Sakura 为日文专用（GGUF，轻小说风格），`source_lang != "ja"` 时 `pipeline.translate.engine_lang_conflict` 会拦截并提示改用 `llm`（通用多语言 GGUF）。
+6. **多语言分工**：`Config.source_lang`（ja/en/zh/other）决定 OCR 后端——日文 manga-ocr，英/中/其它 EasyOCR；翻译引擎推荐——日文 sakura，其它 llm（`pipeline.translate.ENGINE_RECOMMENDATION`，UI 源语言变化时联动改引擎下拉）。**推理设备**（`Config.device`）四个模型现在都认了（4.3）：detect/inpaint 本来就认，manga-ocr/EasyOCR/llama.cpp 通过 `registry._wants_gpu(cfg)` 接上；请求 GPU 但没有可用 CUDA 时统一退回 CPU，不崩。
+7. **每个模型独立路径绑定**：`AppSettings.model_files`（manifest 键 → 绝对路径）经 `to_config()` 传进 `Config.model_paths`，是每次任务的不可变快照（不是进程级全局表——运行中改设置不会影响正在跑的任务）。解析顺序：显式绑定 → 本地缓存搜索（`core.model_locator`）→ 联网下载兜底。绑定失效（文件被移走）或大小不对，直接报错，绝不静默回落去联网下载新的顶替。
+8. **翻译/OCR 分发走注册表**：`pipeline/registry.py` 是翻译引擎（sakura/llm/mock）和 OCR 后端（ocr_ja/ocr_other）唯一的分发数据源；`runner._needed_model_keys`、`ocr.OcrEngine.__init__` 都从这里读，不再各自硬编码 if/elif。`pipeline.translate` 里的 `get_translator`/`engine_lang_conflict`/`ENGINE_LANG_LOCK`/`ENGINE_RECOMMENDATION` 仍然可以照常导入（模块级 `__getattr__` 惰性转发到 registry.py，避免两个模块互相需要对方顶层定义造成循环导入——这是实测复现过的真崩溃，不是预防性设计）。加一个新引擎/后端只需要在 registry.py 里加一条 Entry；`ui/workers.py` 的下载面板、`ui/views/translate_view.py` 的引擎下拉框仍是各自硬编码，留到真的要加第三个引擎/后端时再一起改。
+9. **检测模型**用 `ogkalu/comic-text-and-bubble-detector`（Apache-2.0，规避 GPL 系工具的许可证风险）；类别 0=bubble 1=text_bubble 2=text_free，bubble 类丢弃。
+10. **取色**：未膨胀 mask + 腐蚀核心 + 中位数（膨胀 mask 会混入背景色导致译文发灰）。
+11. **描边策略**：仅浅色文字加黑描边，宽度随字号缩放（`max(1, round(size*0.06))`，
+    不是固定 1px——小字描边太粗、大字太细）；深色文字不描边（气泡内描边会糊）。
+12. **渲染字体多级兜底**：指定字体 → 常见系统 CJK 字体 → `ImageFont.load_default()`，绝不抛。
+13. **模型目录不再有冻结态特殊默认值**：冻结/开发态都用 `core.paths.detect_default_model_dir()` 探测到的 HF 缓存根，由首次运行弹窗（`ui.views.first_run_dialog`）让用户确认或改到别处。**不要**再往 `_apply_default_model_dir_for_frozen` 这类"冻结时默认用 exe 同级目录"的逻辑上加代码——那是上一版备份/还原 hack 的根因，已经删掉。重新打包用 `scripts\build_exe.ps1`（只换 exe 本体 + `_internal\`），不要直接跑裸的 PyInstaller 命令，否则 `--clean` 会清空 `dist\comicgen\` 下的 `settings.json`。
+14. **UI 输出路径**：留空=输入同级 `_translated`；可手动指定避免上传 zip 落 temp。
+15. PowerShell 控制台 GBK 显示中文日志乱码是**显示问题**，日志本身 UTF-8 正常，不要为此改代码。
+16. **校对界面**（`ui/views/review_view.py` + `app/review_session.py`）：画布上的检测框直接可点，选中后侧栏
     编辑译文；"应用译文"只改文字+存盘（快），"重渲染本页"才真的跑一次 LaMa 抹字+渲染（慢，GPU，在
     `ReviewRerenderWorker` 的 QThread 里跑）。改译文会把该页状态从 `rendered` 打回 `translated`（和
     `Runner.rerender` 语义一致），但**只影响这一页**，不会像"重渲染"整卷任务那样把其它已渲染页也标记
