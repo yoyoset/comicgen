@@ -48,9 +48,9 @@ def test_parse_numbered_tolerates_cjk_punctuation():
     assert BaseTranslator._parse_numbered("1、甲\n2：乙", 2) == ["甲", "乙"]
 
 
-def test_parse_numbered_returns_none_when_short():
-    """条数对不上必须返回 None 触发逐条重试，绝不能返回错位的结果。"""
-    assert BaseTranslator._parse_numbered("1. 翻译1\n2. 翻译2", 3) is None
+def test_parse_numbered_marks_missing_tail_as_none():
+    """条数对不上时，缺失位置必须是 None（交给上层逐条重试），绝不能是错位的结果。"""
+    assert BaseTranslator._parse_numbered("1. 翻译1\n2. 翻译2", 3) == ["翻译1", "翻译2", None]
 
 
 def test_engine_lang_conflict():

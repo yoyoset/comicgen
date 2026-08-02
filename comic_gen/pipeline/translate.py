@@ -25,25 +25,139 @@ _LLM_SYS_TMPL = (
     "拟声词可意译；不要输出任何解释。"
 )
 
+# 实测（493 页杂志一次真实运行）：162 个区域的 translated_text 是提示词模板本身被
+# 当成译文抹字重绘到了页面上。这些子串取自 _batch_prompt/_single_prompt 的字面量，
+# 一旦改了提示词措辞要同步改这里——test_translate_batch.py 有防漂移断言。
+_ECHO_MARKERS = (
+    "仅供理解语境",
+    "只输出译文",
+    "保持编号格式输出",
+    "不要合并不要遗漏",
+    "把下面这句话翻译成",
+    "把下列编号文本逐条翻译成",
+)
+
+
+def _is_failed_translation(source: str, output: str) -> bool:
+    """明显失败的译文：空白 / 回显了提示词模板 / 原样吐回原文。
+
+    纯函数，不依赖模型。判为失败的译文由调用方落成空字符串——下游
+    select_drawable_regions（runner.py）会保留原文不抹除，校对页会列进
+    「需要注意」，不需要额外的失败态管线。
+    """
+    stripped = output.strip()
+    if not stripped:
+        return True
+    if any(marker in stripped for marker in _ECHO_MARKERS):
+        return True
+    if stripped == source.strip():
+        return True
+    return False
+
 
 class BaseTranslator:
     name = "base"
 
+    # 实测（493 页杂志一次真实运行）：不分块时密集页（40+ 区域）预估输出 token 超过
+    # 旧硬编码的 max_tokens=1024，输出从中间被截断，_parse_numbered 判定整页解析失败，
+    # 触发全页逐条重试——46 页密集页合计把 46 次批量调用放大成约 2125 次调用。
+    # 分块把「整页一次调用」改成「按预算切块」，让 90% 的常规页（中位数 9 区域）
+    # 仍是 1 次调用不回归，同时让密集页的失败半径从"整页"缩小到"一个块"。
+    _MAX_CHUNK_LINES = 12
+    _CHUNK_OUTPUT_TOKEN_BUDGET = 480
+    _OUTPUT_TOKEN_HEADROOM = 2.0
+    _SINGLE_OUTPUT_HEADROOM = 3.0
+    _OUTPUT_TOKEN_CEILING = 1024
+    _OUTPUT_TOKEN_FLOOR = 96
+    # 全页逐条重试曾经是全有全无：80 条里错 1 条，另外 79 条正确译文也要重译一遍。
+    # 现在只重试真正缺失的下标，但仍需要一个每页硬上限，防止病态页把重试次数
+    # 顶回接近"每个区域一次调用"的老路。
+    _MAX_SINGLE_RETRIES_PER_PAGE = 16
+
     def translate(self, texts: list[str], cfg: Config) -> list[str]:
         raise NotImplementedError
 
-    def _translate_batch_llm(self, texts: list[str], cfg: Config, call_llm) -> list[str]:
-        """整页编号批量翻译，保持对齐；解析失败则逐条重试（带上下文）。"""
-        numbered = "\n".join(f"{i + 1}. {t.replace(chr(10), ' ')}" for i, t in enumerate(texts))
-        prompt = (
+    @staticmethod
+    def _est_output_tokens(text: str) -> int:
+        """粗估一条译文的输出 token 数（含编号前缀与换行）。未经模型分词器校准，
+        只用于分块决策，_MAX_CHUNK_LINES 兜住估算偏差的极端情况。"""
+        return 6 + int(len(text) * 1.5)
+
+    @classmethod
+    def _max_tokens_for(cls, est: int, headroom: float) -> int:
+        return min(cls._OUTPUT_TOKEN_CEILING, max(cls._OUTPUT_TOKEN_FLOOR, int(est * headroom)))
+
+    @classmethod
+    def _chunk_indices(cls, texts: list[str]) -> list[list[int]]:
+        """把整页切块，返回原始下标分组（不是切片）。
+
+        用原始下标而不是切片，是为了让「各块拼接后恰好等于 range(len(texts))」这个
+        对齐契约可以直接断言——runner.py 的 translate() 调用方用 zip(regions, results)
+        按位置写回，这个契约一旦破坏就是静默错位。
+        """
+        chunks: list[list[int]] = []
+        cur: list[int] = []
+        cur_tokens = 0
+        for i, t in enumerate(texts):
+            est = cls._est_output_tokens(t)
+            if cur and (len(cur) >= cls._MAX_CHUNK_LINES
+                        or cur_tokens + est > cls._CHUNK_OUTPUT_TOKEN_BUDGET):
+                chunks.append(cur)
+                cur = []
+                cur_tokens = 0
+            cur.append(i)
+            cur_tokens += est
+        if cur:
+            chunks.append(cur)
+        return chunks
+
+    @staticmethod
+    def _batch_prompt(chunk_texts: list[str], cfg: Config) -> str:
+        """块内编号提示词，编号从 1 开始——与全局下标的映射由 _chunk_indices 负责。"""
+        numbered = "\n".join(
+            f"{i + 1}. {t.replace(chr(10), ' ')}" for i, t in enumerate(chunk_texts)
+        )
+        return (
             f"把下列编号文本逐条翻译成{cfg.target_lang}，保持编号格式输出，"
             f"每条一行，不要合并不要遗漏：\n{numbered}"
         )
-        result = self._parse_numbered(call_llm(prompt), len(texts))
-        if result is None:
-            logger.warning("整页编号解析失败（编号缺失/重复/多出），回退逐条翻译（%s）", self.name)
-            result = [call_llm(self._single_prompt(texts, i, cfg)) for i in range(len(texts))]
-        return result
+
+    def _translate_batch_llm(self, texts: list[str], cfg: Config, call_llm) -> list[str]:
+        """整页分块编号批量翻译；块内解析缺口只对缺的那几条逐条重试（带上下文），
+        并有每页重试上限。返回列表长度恒等于 len(texts)——调用方按位置 zip 写回
+        region，短一条就会静默丢掉尾部区域。
+        """
+        n = len(texts)
+        results: list[str | None] = [None] * n
+        for chunk in self._chunk_indices(texts):
+            chunk_texts = [texts[i] for i in chunk]
+            est = sum(self._est_output_tokens(t) for t in chunk_texts)
+            max_tokens = self._max_tokens_for(est, self._OUTPUT_TOKEN_HEADROOM)
+            raw = call_llm(self._batch_prompt(chunk_texts, cfg), max_tokens)
+            parsed = self._parse_numbered(raw, len(chunk))
+            for pos, gi in enumerate(chunk):
+                val = parsed[pos]
+                if val is not None and not _is_failed_translation(texts[gi], val):
+                    results[gi] = val
+
+        missing = [i for i in range(n) if results[i] is None]
+        if missing:
+            logger.warning(
+                "翻译分块解析有缺口（%d/%d 条待逐条重试，%s）", len(missing), n, self.name
+            )
+        retry_budget = missing[: self._MAX_SINGLE_RETRIES_PER_PAGE]
+        for i in retry_budget:
+            est = self._est_output_tokens(texts[i])
+            max_tokens = self._max_tokens_for(est, self._SINGLE_OUTPUT_HEADROOM)
+            out = call_llm(self._single_prompt(texts, i, cfg), max_tokens)
+            if not _is_failed_translation(texts[i], out):
+                results[i] = out
+        if len(missing) > len(retry_budget):
+            logger.warning(
+                "翻译重试预算耗尽（%d 条超出每页上限 %d，%s），保留原文不抹除",
+                len(missing) - len(retry_budget), self._MAX_SINGLE_RETRIES_PER_PAGE, self.name,
+            )
+        return [v if v is not None else "" for v in results]
 
     @staticmethod
     def _single_prompt(texts: list[str], i: int, cfg: Config) -> str:
@@ -59,15 +173,21 @@ class BaseTranslator:
         return f"{ctx}把下面这句话翻译成{cfg.target_lang}，只输出译文：\n{texts[i]}"
 
     @staticmethod
-    def _parse_numbered(text: str, n: int) -> list[str] | None:
-        """解析"编号. 内容"格式的整页批量翻译输出。
+    def _parse_numbered(text: str, n: int) -> list[str | None]:
+        """解析"编号. 内容"格式的批量翻译输出。返回长度恒为 n 的列表，不可信的位置为 None。
 
-        编号集合必须恰好是 {1..n}，重复编号直接判定失败——数量对不代表编号对
-        （实测：模型漏掉第 4 条却多输出一条第 7 条，len(items)==n 会误判为"解析成功"，
-        第 4 条变空、第 7 条被静默丢弃）。不匹配编号格式的行追加到上一条（多行译文的续行），
-        不再静默丢弃。
+        只信任 1,2,…,k 这个"每个编号都存在且唯一"的最长前缀，第一个缺口（缺失/重复）
+        起全部置 None——数量对不代表编号对（实测：模型漏掉第 4 条却多输出一条第 7 条，
+        若天真保留所有合法编号，它的"5,6,7"其实对应原文 4,5,6，会静默渲染三条错译）。
+        前缀内的编号不会有这种错位（每个都存在且唯一），所以可信；缺口之后一律当作
+        整体不可信，交给上层逐条重试。这也正好匹配最常见的失败模式——max_tokens
+        截断丢的是后缀，前缀完整可信。
+
+        不匹配编号格式的行追加到上一条（多行译文的续行），不再静默丢弃。
+        超出 n 的编号无需特判：前缀扫描只走 1..n，天然忽略。
         """
         items: dict[int, str] = {}
+        dupes: set[int] = set()
         last_key: int | None = None
         for line in text.strip().splitlines():
             stripped = line.strip()
@@ -77,14 +197,19 @@ class BaseTranslator:
             if m:
                 idx = int(m.group(1))
                 if idx in items:
-                    return None  # 重复编号：无法判断哪个才是对的，判定解析失败
-                items[idx] = m.group(2).strip()
+                    dupes.add(idx)
+                else:
+                    items[idx] = m.group(2).strip()
                 last_key = idx
-            elif last_key is not None:
+            elif last_key is not None and last_key in items:
                 items[last_key] = (items[last_key] + " " + stripped).strip()
-        if set(items.keys()) != set(range(1, n + 1)):
-            return None
-        return [items[i + 1] for i in range(n)]
+
+        trusted = 0
+        for i in range(1, n + 1):
+            if i not in items or i in dupes:
+                break
+            trusted = i
+        return [items[i + 1] if i < trusted else None for i in range(n)]
 
 
 class _LlamaGGUFTranslator(BaseTranslator):
@@ -98,6 +223,11 @@ class _LlamaGGUFTranslator(BaseTranslator):
     system_prompt: str = ""
     temperature: float = 0.3
     top_p: float = 1.0
+    # 实测：pinned 的 llama-cpp-python==0.3.34 默认 repeat_penalty=1.0（即关闭）。
+    # 小量化模型在逐条兜底模式面对碎片化输入时会退化成把提示词原样吐回来
+    # （_ECHO_MARKERS 命中的 162 个真实区域），开启惩罚是缓解手段之一，但不是
+    # 保证——真正兜底的是 _is_failed_translation 的输出校验。
+    repeat_penalty: float = 1.1
 
     def __init__(self, cfg: Config):
         # 让 llama_cpp 的 CUDA 后端能找到 torch 自带的 CUDA 运行时 DLL（torch/lib）
@@ -172,7 +302,7 @@ class _LlamaGGUFTranslator(BaseTranslator):
                 technical=str(e),
             ) from e
 
-    def _call(self, prompt: str) -> str:
+    def _call(self, prompt: str, max_tokens: int) -> str:
         resp = self.llm.create_chat_completion(
             messages=[
                 {"role": "system", "content": self.system_prompt},
@@ -180,7 +310,8 @@ class _LlamaGGUFTranslator(BaseTranslator):
             ],
             temperature=self.temperature,
             top_p=self.top_p,
-            max_tokens=1024,
+            max_tokens=max_tokens,
+            repeat_penalty=self.repeat_penalty,
         )
         return resp["choices"][0]["message"]["content"].strip()
 

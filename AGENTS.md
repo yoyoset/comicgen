@@ -109,6 +109,19 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
     基础设施（`QGraphicsScene`/`QGraphicsView` 这类对象图在 pytest 里反复构造/析构会真实触发
     access violation 崩溃，试过），验证这类改动用一次性离屏脚本（`QT_QPA_PLATFORM=offscreen` 构造
     真实 `MainWindow` 走一遍流程），不要往 `tests/` 里加构造 `QGraphicsScene` 的 pytest 用例。
+17. **翻译阶段分块 + 前缀可信解析 + 输出校验**（`pipeline/translate.py`）：整页不再一次性
+    塞进一个编号提示词——密集页（杂志排版常见 40+ 区域/页）预估输出超过 `max_tokens` 会被
+    从中间截断，旧实现把"截断"等同于"整页失败"，逐条重译全部区域（实测：493 页杂志一次
+    真实运行里，46 个密集页把 46 次调用放大成约 2125 次）。现在 `_chunk_indices` 按行数/
+    token 预算切块（中位数页仍是 1 块 1 次调用，不回归），`_parse_numbered` 改为**前缀可信**
+    ——只信任 `1..k` 这个每个编号都存在且唯一的最长前缀，缺口起标 `None` 交给
+    `_translate_batch_llm` 逐条重试，重试有每页硬上限（`_MAX_SINGLE_RETRIES_PER_PAGE`）。
+    另外**译文输出零校验**曾让模型把提示词模板原样吐回来当"译文"抹字重绘到页面上
+    （同一次运行里 162 个区域），`_is_failed_translation`（空白/回显`_ECHO_MARKERS`/
+    原样等于原文）现在会拦下这类结果，落成空字符串——下游 `select_drawable_regions`
+    本来就会对空译文保留原文不抹除，校对页会列进"需要注意"，不需要新管线。这几个常量
+    都是模块级的，不是 `Config` 字段（没人会去调，且新增 Config 字段要同步
+    `runner.py` `_get_translator` 的引擎缓存签名，为不可配置的内部参数不值得）。
 
 ## 已知待办 / 局限
 
@@ -117,3 +130,8 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 - 竖排标点/数字未做体位旋转；SFX 拟声词无专项处理。
 - 磁盘冗余（同机与 subgen 共享缓存产生的重复文件、失败下载残留）本轮只做了查重/软删除入口，未清理，
   详见项目 memory `offline-and-model-sharing`。
+- **上游区域质量未过滤**：实测（同一次 493 页杂志运行）manga-ocr 没有置信度门槛、从不返回空
+  字符串，6127 个检测区域里 OCR 结果 0 个为空——装饰花纹/logo 也会被幻觉成日文文字，照样进翻译
+  和渲染；30% 的区域检测分数 < 0.7。这是独立于翻译阶段分块修复的另一个算力/质量杠杆，本轮明确
+  不做：这次杂志数据是唯一实测样本，阈值对正常漫画气泡未必合适，没有更多真实素材前不编造"已实测"
+  的阈值（全局 CLAUDE.md 硬性要求）。
