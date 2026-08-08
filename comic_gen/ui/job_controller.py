@@ -26,10 +26,13 @@ class JobController(QtCore.QObject):
     loadProgress = QtCore.Signal(int, int)
     finished = QtCore.Signal(object)  # JobReport 或异常字符串
 
-    def __init__(self):
+    def __init__(self, runner: Runner | None = None):
         super().__init__()
         self._state = STATE_IDLE
-        self._runner: Runner | None = None
+        # 共享的 Runner：和批量队列（batch_controller.BatchController）共用同一个实例，
+        # 让单任务和批量跨两种入口复用模型缓存，不会各加载一份几十 GB 的模型。
+        # 两者互斥执行（MainWindow 里互相拦 busy），不会同时跑两个任务。
+        self._runner = runner
         self._thread: QtCore.QThread | None = None
         self._worker: PipelineWorker | None = None
         self._cancel_event: threading.Event | None = None
