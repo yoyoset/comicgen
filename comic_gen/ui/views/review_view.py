@@ -218,6 +218,8 @@ class ReviewView(QtWidgets.QWidget):
         self.source_edit.setPlainText(region.source_text)
         self.translated_edit.setPlainText(region.translated_text)
         self._set_editing_enabled(True)
+        # 选中即把焦点给译文编辑框：点一下 → 直接打字 → Ctrl+Enter，鼠标不用再挪到按钮
+        self.translated_edit.setFocus()
 
     def _on_apply_clicked(self):
         if self._current_image is None or self._selected_index is None:
