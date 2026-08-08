@@ -55,16 +55,21 @@ comic_gen/
 │                translate(sakura/llm/mock，全本地 GGUF) inpaint(LaMa+取色) render(横竖排自适应)
 │                registry.py(翻译引擎/OCR 后端的单一注册表，取代硬编码 if/elif 分发)
 │                runner(编排+pages.json断点续跑+job.json快照+JobReport+协作式取消)
-├── app/         job_service.py（Qt-free 任务入口，`comicgen` CLI 用这个；
+├── app/         batch_queue.py（批量队列数据模型，Qt-free：BatchQueue/BatchJob +
+│                has_work/reset_for_rerun/去重，10+ 个离线测试）
+│                job_service.py（Qt-free 任务入口，`comicgen` CLI 用这个；
 │                UI 走 ui/job_controller.py 是因为需要跨任务复用 Runner 的引擎缓存，
 │                这里每次调用建一个新 Runner，跑完即弃，不是要取代那条路径）
 │                review_session.py（校对会话，Qt-free：读写 pages.json、
 │                「需要注意」区域列表、单页重渲染——不碰其它页、不重新打包最终产物）
 └── ui/
     ├── main_window.py   组合根：只接线，不含业务决策
-    ├── job_controller.py 任务生命周期唯一归属（idle/running/cancelling）
+    ├── job_controller.py 单任务生命周期唯一归属（idle/running/cancelling）
+    ├── batch_controller.py 批量队列执行控制器（顺序驱动共享 Runner，任务结束零弹窗
+    │                 自动推进；stop 协作式取消后不推进；_run_next 前 _reap_thread——
+    │                 不先等旧 QThread 退出就覆盖引用会实测崩 0xC0000409）
     ├── workers.py       QThread 工作对象（PipelineWorker/ModelWorker/ScanWorker/ReviewRerenderWorker）
-    └── views/           纯视图：translate/settings/model/diagnostics/first_run_dialog/review
+    └── views/           纯视图：translate/batch/settings/model/diagnostics/first_run_dialog/review
 entry_ui.py      EXE 入口（绝对导入；不要直接用包内 app.py 当入口）
 build_exe.spec   PyInstaller 配置，collect_all 清单从 bundle_packages.py 导入（不在这两处各写一份）
 bundle_packages.py  build_exe.spec 的 collect_all 包清单，唯一定义
@@ -160,6 +165,18 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
     是"界面看着完成、产物没跟上"的坑。导出按钮走与「重渲染」相同的 `Runner.rerender`
     路径：用校对会话的 `work_dir` 做 `work_dir_override`、用它的 `cfg`（job.json 快照，
     不是当前设置页），重新抹字渲染全部页并重新打包，带确认弹窗（慢操作）。
+26. **批量队列**（`app/batch_queue.py` + `ui/batch_controller.py` + `ui/views/batch_view.py`）：
+    一次加入多个输入（文件多选 + 文件夹），**顺序执行**（GPU 12GB 不能并行两个模型任务），
+    任务结束零模态弹窗自动推进，状态全内联——与单任务最本质的区别是"睡一觉回来"不能卡在
+    确认框上。队列语义是 **N 个独立任务各自独立工作目录**，不是"一个大任务"（文件夹输入
+    仍是递归的，指向系列根目录会把整卷当一个任务，批量页不替用户拆卷）。单任务与批量共用
+    同一个 `Runner`（模型缓存跨两种入口复用），各入口统一走 `MainWindow._any_job_busy`
+    互斥，不会同时占 GPU。`BatchController._run_next` 换新 QThread 前必须先 `_reap_thread`
+    （quit+wait，超时保引用防 GC）——否则旧线程 quit() 还排在主线程事件队列里、覆盖引用
+    让 C++ QThread 在 running 中被销毁，**实测崩 0xC0000409**。批量「校对」复用
+    `MainWindow._open_review_dir`，因此该函数改经 `resolve_pages_json` 定位工作目录
+    （压缩包/PDF 输入的输出是文件，直接拿它当工作目录会报找不到 pages.json，是单任务
+    「校对本次结果」的潜伏 bug，顺带修掉）。
 
 ## 已知待办 / 局限
 
