@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from pathlib import Path
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -30,10 +32,32 @@ def ensure_dir(p: Path) -> Path:
     return Path(p)
 
 
-def save_json(obj, path: Path):
+def atomic_write_text(path, text: str) -> None:
+    """把 text 写入 path，用「同目录临时文件 + 原子替换」避免半写文件。
+
+    不能直接 path.write_text()：pages.json / job.json / settings.json 是任务恢复的
+    唯一依据，进程在写盘中途被杀会留下截断/损坏的 JSON——_load_pages 只能把它当
+    "没有缓存"整体丢弃，等于丢掉整个任务的断点（翻译阶段可能已跑几十分钟）。
+    临时文件与目标同目录保证同一文件系统上，os.replace 在 Windows/NTFS 上是原子的；
+    写盘中途失败时清理临时文件并原样保留目标文件，绝不留下半份内容。
+    """
     path = Path(path)
     ensure_dir(path.parent)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def save_json(obj, path: Path):
+    atomic_write_text(path, json.dumps(obj, ensure_ascii=False, indent=2))
 
 
 def load_json(path: Path):

@@ -14,6 +14,7 @@ from pathlib import Path
 from .config import Config
 from .job import JobRequest
 from .paths import legacy_settings_path, settings_path
+from .utils import atomic_write_text
 
 
 @dataclass
@@ -99,8 +100,9 @@ class AppSettings:
 
     def save(self, path: Path | None = None) -> None:
         path = path or settings_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8")
+        # 原子写入：设置文件被进程杀在半途会损坏，下次启动 parse_or_recover 只能整份
+        # 回退默认值（model_dir/model_files 等几十 GB 指向的绑定全丢）。见 core.utils.atomic_write_text。
+        atomic_write_text(path, json.dumps(asdict(self), ensure_ascii=False, indent=2))
 
     # ------------------------------------------------------------ 唯一的 Config 组装点
     def to_config(self, request: JobRequest) -> Config:

@@ -1,9 +1,11 @@
 """Tests for core.utils (offline, no models/network)."""
-import pytest
-from comic_gen.core.utils import natural_key, save_json, load_json
 import json
-from pathlib import Path
 import tempfile
+from pathlib import Path
+
+import pytest
+
+from comic_gen.core.utils import atomic_write_text, load_json, natural_key, save_json
 
 
 def test_natural_key():
@@ -59,3 +61,51 @@ def test_load_json_not_exists_raises():
     with tempfile.TemporaryDirectory() as tmpdir:
         with pytest.raises(FileNotFoundError):
             load_json(Path(tmpdir) / "nonexistent.json")
+
+
+def test_atomic_write_creates_parent_and_writes_complete_content():
+    """临时文件 + 原子替换后，目标读到的是完整内容（不是写了一半）。"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = Path(tmpdir) / "sub" / "pages.json"
+        atomic_write_text(target, '{"pages": [1, 2, 3]}')
+        assert target.read_text(encoding="utf-8") == '{"pages": [1, 2, 3]}'
+        # 不留下任何临时文件
+        assert list(Path(tmpdir).rglob("*.tmp")) == []
+
+
+def test_atomic_write_overwrites_existing_target():
+    """覆盖已有文件时内容完整替换，不存在"新旧混写"。"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = Path(tmpdir) / "job.json"
+        atomic_write_text(target, "old")
+        atomic_write_text(target, "new-content")
+        assert target.read_text(encoding="utf-8") == "new-content"
+
+
+def test_atomic_write_failure_keeps_original_and_cleans_temp(monkeypatch):
+    """替换前任何一步失败（这里模拟 os.replace 抛错），原文件内容必须原样保留，
+    临时文件必须被清理——这是"写一半丢全部恢复点"要防住的场景。"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        target = Path(tmpdir) / "pages.json"
+        atomic_write_text(target, "original")
+
+        def _boom(src, dst):
+            raise OSError("模拟磁盘写入失败")
+
+        monkeypatch.setattr("comic_gen.core.utils.os.replace", _boom)
+        with pytest.raises(OSError):
+            atomic_write_text(target, "partial-new")
+        monkeypatch.undo()
+
+        assert target.read_text(encoding="utf-8") == "original"
+        # 失败路径下临时文件也要清干净，不能往工作目录里堆垃圾
+        assert list(Path(tmpdir).iterdir()) == [target]
+
+
+def test_save_json_uses_atomic_write(tmp_path):
+    """save_json 走 atomic_write_text，roundtrip 内容一致且无临时文件残留。"""
+    data = {"pages": [{"image": "p1.png", "status": "rendered"}]}
+    target = tmp_path / "nested" / "pages.json"
+    save_json(data, target)
+    assert load_json(target) == data
+    assert list(tmp_path.rglob("*.tmp")) == []
