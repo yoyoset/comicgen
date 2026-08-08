@@ -4,7 +4,13 @@
 top-k，同一个 query 在多个类别都超阈值时会输出完全相同的框（不同 label）。
 """
 from comic_gen.core.models import Region
-from comic_gen.pipeline.detect import _containment, _iou, reading_order, suppress_overlaps
+from comic_gen.pipeline.detect import (
+    _containment,
+    _iou,
+    filter_region_quality,
+    reading_order,
+    suppress_overlaps,
+)
 
 
 def test_identical_box_different_label_keeps_higher_score():
@@ -55,6 +61,20 @@ def test_three_way_duplicate_keeps_only_highest():
 
 def test_empty_input():
     assert suppress_overlaps([]) == []
+
+
+def test_quality_filter_drops_only_scores_below_conservative_starting_point():
+    low = Region(bbox=[0, 0, 10, 10], score=0.399)
+    boundary = Region(bbox=[20, 0, 10, 10], score=0.4)
+    high = Region(bbox=[40, 0, 10, 10], score=0.9)
+    kept = filter_region_quality([low, boundary, high])
+    assert kept == [boundary, high]
+
+
+def test_quality_filter_does_not_mutate_input():
+    regions = [Region(bbox=[0, 0, 10, 10], score=0.2)]
+    filter_region_quality(regions)
+    assert len(regions) == 1
 
 
 def test_single_region_passthrough():

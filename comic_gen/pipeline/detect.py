@@ -11,6 +11,10 @@ LABEL_BUBBLE = 0
 LABEL_TEXT_BUBBLE = 1
 LABEL_TEXT_FREE = 2
 
+# T1 实测的 493 页样本中，score < 0.4 占 7.0%。这是基于该样本的保守起点值，尚未
+# 在其它漫画素材上校准；先只使用 score 规则，不把未验证的面积/长宽比规则带入生产。
+REGION_QUALITY_MIN_SCORE = 0.4
+
 
 def _to_xyxy(bbox: list[int]) -> list[int]:
     x, y, w, h = bbox
@@ -70,6 +74,13 @@ def suppress_overlaps(
     return kept
 
 
+def filter_region_quality(
+    regions: list[Region], min_score: float = REGION_QUALITY_MIN_SCORE
+) -> list[Region]:
+    """丢弃低于保守起点分数的区域，返回新列表且不修改输入。"""
+    return [region for region in regions if region.score >= min_score]
+
+
 def reading_order(regions: list[Region], rtl: bool = False, band: int | None = None) -> list[Region]:
     """按阅读顺序排序：先按行分组（y 相近的框算同一行），行内按方向排序。
 
@@ -125,6 +136,6 @@ class ComicDetector:
             regions.append(
                 Region(bbox=[x1, y1, bw, bh], direction=direction, kind=kind, score=float(score))
             )
-        regions = suppress_overlaps(regions)
+        regions = filter_region_quality(suppress_overlaps(regions))
         regions.sort(key=lambda r: (r.bbox[1], r.bbox[0]))
         return regions
