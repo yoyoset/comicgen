@@ -329,6 +329,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings_view.set_running(running, self._running_settings_summary())
         text = {"idle": "就绪", "running": "运行中…", "cancelling": "正在停止…"}.get(state, state)
         self.status_lbl.setText(text)
+        if state == STATE_RUNNING:
+            # 冷启动要加载检测/OCR/翻译/抹字四个模型，可能 30 秒以上——在第一个阶段
+            # 进度到达前先明确告诉用户"正在加载模型"，而不是进度条停在 0 毫无说明。
+            self.translate_view.set_progress(0, "正在加载模型…")
         if state == "idle":
             self.status_progress.setVisible(False)
 
