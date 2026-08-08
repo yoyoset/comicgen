@@ -13,8 +13,11 @@ from ..core.errors import ComicGenError, format_job_failure
 from ..core.job import JobReport, JobRequest, format_failure_report, read_original_input, resolve_pages_json
 from ..core.manifest import MODEL_MANIFEST
 from ..core.settings import AppSettings
+from ..pipeline.runner import Runner
 from ..pipeline.translate import engine_lang_conflict
+from .batch_controller import BatchController
 from .job_controller import STATE_RUNNING, JobController
+from .views.batch_view import BatchView
 from .views.diagnostics_view import DiagnosticsView
 from .views.first_run_dialog import FirstRunDialog
 from .views.model_view import ModelView
@@ -50,6 +53,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._review_session: ReviewSession | None = None
 
         self.translate_view = TranslateView()
+        self.batch_view = BatchView()
         self.settings_view = SettingsView()
         self.model_view = ModelView()
         self.diagnostics_view = DiagnosticsView()
@@ -57,13 +61,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
         tabs = QtWidgets.QTabWidget()
         tabs.addTab(self.translate_view, "翻译")
+        tabs.addTab(self.batch_view, "批量")
         tabs.addTab(self.review_view, "校对")
         tabs.addTab(self.settings_view, "设置")
         tabs.addTab(self.model_view, "模型管理")
         tabs.addTab(self.diagnostics_view, "环境自检")
         self.setCentralWidget(tabs)
 
-        self.job_controller = JobController()
+        # 单任务与批量共用同一个 Runner：模型缓存跨两种入口复用（各自再加载一份几十 GB
+        # 的权重是这个应用承受不起的成本）。两者互斥执行（各入口互相拦 is_busy），
+        # 不会同时跑两个任务占爆 12GB 显存。
+        self._runner = Runner()
+        self.job_controller = JobController(self._runner)
+        self.batch_controller = BatchController(self._runner)
 
         self._build_menu()
         self._build_status_bar()
@@ -137,11 +147,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self.job_controller.loadProgress.connect(self._on_load_progress)
         self.job_controller.finished.connect(self._on_job_finished)
 
+        self.batch_view.addFilesRequested.connect(self._on_batch_add_files)
+        self.batch_view.addFolderRequested.connect(self._on_batch_add_folder)
+        self.batch_view.removeSelectedRequested.connect(self._on_batch_remove_selected)
+        self.batch_view.clearFinishedRequested.connect(self._on_batch_clear_finished)
+        self.batch_view.startRequested.connect(self._on_batch_start)
+        self.batch_view.stopRequested.connect(self.batch_controller.stop)
+        self.batch_view.openOutputRequested.connect(self._on_batch_open_output)
+        self.batch_view.reviewRequested.connect(self._on_batch_review)
+
+        self.batch_controller.queueChanged.connect(self._on_batch_queue_changed)
+        self.batch_controller.jobStarted.connect(self._on_batch_job_started)
+        self.batch_controller.jobProgress.connect(self._on_batch_job_progress)
+        self.batch_controller.stateChanged.connect(self._on_batch_state_changed)
+        self.batch_controller.queueFinished.connect(self._on_batch_queue_finished)
+        self.batch_controller.log.connect(self.batch_view.append_log)
+
     def _load_settings_into_views(self):
         self.settings_view.load_from(self.settings)
         self.model_view.set_model_dir_label(self.settings.model_dir)
         self.model_view.set_current_bindings(self.settings.model_files)
         self.translate_view.set_last_browse_dir(self.settings.last_input_dir)
+        self.batch_view.set_last_browse_dir(self.settings.last_input_dir)
         apply_model_dir(self.settings.model_dir)
 
     def _restore_window_geometry(self):
@@ -205,7 +232,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._start_scan_worker()
 
     # ------------------------------------------------------------ 翻译
+    def _any_job_busy(self) -> bool:
+        """单任务或批量队列是否有任何一个在跑。GPU 只有一块，两条路径必须互斥，
+        别处入口（开始/重渲染/校对/模型管理/自检）统一走这一个判断。"""
+        return self.job_controller.is_busy() or self.batch_controller.is_busy
+
     def _on_start(self):
+        if self.batch_controller.is_busy:
+            QtWidgets.QMessageBox.information(self, "提示", "批量队列正在运行，请先停止队列再开始单任务。")
+            return
         if self.job_controller.is_busy():
             return
         request = self.translate_view.build_request()
@@ -267,7 +302,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return "以下模型还没准备好，请先到「模型管理」页下载或定位：\n\n" + "\n".join(problems)
 
     def _on_rerender(self):
-        if self.job_controller.is_busy():
+        if self._any_job_busy():
             return
 
         if self._last_completed_request is not None and self._last_completed_output_path is not None and \
@@ -326,6 +361,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_job_state_changed(self, state: str):
         running = state == STATE_RUNNING or state == "cancelling"
         self.translate_view.set_running(running)
+        self.batch_view.set_blocked(running)
         self.settings_view.set_running(running, self._running_settings_summary())
         text = {"idle": "就绪", "running": "运行中…", "cancelling": "正在停止…"}.get(state, state)
         self.status_lbl.setText(text)
@@ -438,7 +474,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ------------------------------------------------------------ 模型管理
     def _start_model_worker(self, keys: list[str], do_download: bool):
-        if self.job_controller.is_busy():
+        if self._any_job_busy():
             return
         # 重入保护：换新线程前不等旧线程收尾，旧的 QThread 对象会在还在跑的时候被丢弃
         # 引用——FirstRunDialog._start_scan 那边实测复现过这样会把解释器崩成
@@ -470,7 +506,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._start_scan_worker()  # 下载/检查完刷新一遍状态；同时会把 set_busy(False) 一起做了
 
     def _start_scan_worker(self):
-        if self.job_controller.is_busy():
+        if self._any_job_busy():
             return
         # 同上一处的重入保护：_on_settings_changed 每次设置变更都会调这个方法，
         # 拖动滑块/spinbox 连续触发时旧扫描线程可能还没跑完。
@@ -529,7 +565,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 环境自检含全部 6 个模型的本地搜索，在共享大模型目录上实测要几秒——不能放
         # UI 线程同步跑（启动/每次扫描完成都会卡界面）。挪到后台线程，和模型扫描
         # 同一个线程模式；重入保护同其它 worker（换线程前不等旧线程收尾的守卫）。
-        if self.job_controller.is_busy():
+        if self._any_job_busy():
             return
         if self._d_thread is not None and self._d_thread.isRunning():
             return
@@ -561,9 +597,172 @@ class MainWindow(QtWidgets.QMainWindow):
         if target.exists():
             QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(target)))
 
+    # ------------------------------------------------------------ 批量队列
+    def _on_batch_add_files(self):
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self, "添加漫画文件", self.batch_view.default_dir(),
+            "漫画文件 (*.zip *.cbz *.epub *.pdf *.rar *.cbr);;所有文件 (*.*)")
+        if not paths:
+            return
+        self._batch_enqueue(paths, first=paths[0])
+
+    def _on_batch_add_folder(self):
+        d = QtWidgets.QFileDialog.getExistingDirectory(self, "添加输入文件夹", self.batch_view.default_dir())
+        if not d:
+            return
+        self._batch_enqueue([d], first=d)
+
+    def _batch_enqueue(self, paths: list[str], first: str):
+        """批量加入任务；重复输入在队列里内联提示"已在队列中"，不弹模态框、不静默丢。"""
+        added = 0
+        rejects: list[str] = []
+        for p in paths:
+            err = self.batch_controller.enqueue(p)
+            if err is None:
+                added += 1
+            else:
+                rejects.append(err)
+        # 记住最近浏览目录，下次文件对话框从这里开始
+        self.settings.last_input_dir = str(Path(first).parent)
+        self.settings.save()
+        self.batch_view.set_last_browse_dir(self.settings.last_input_dir)
+        if rejects:
+            self.batch_view.set_notice(
+                f"已加入 {added} 个任务；{len(rejects)} 个已在队列中跳过：\n" + "\n".join(rejects))
+        else:
+            self.batch_view.set_notice(f"已加入 {added} 个任务")
+
+    def _on_batch_remove_selected(self):
+        job = self.batch_view.selected_job()
+        if job is None:
+            return
+        err = self.batch_controller.remove(job)
+        if err is not None:
+            self.batch_view.set_notice(err)
+
+    def _on_batch_clear_finished(self):
+        n = self.batch_controller.clear_finished()
+        if n:
+            self.batch_view.set_notice(f"已清空 {n} 个已结束的任务")
+
+    def _on_batch_start(self):
+        if self.job_controller.is_busy():
+            QtWidgets.QMessageBox.information(self, "提示", "有单个任务正在运行，请先等待它完成或停止。")
+            return
+        if self.batch_controller.is_busy:
+            return
+        if not self.batch_controller.queue.jobs():
+            self.batch_view.set_notice("队列为空——先把漫画加进队列再开始。")
+            return
+        if not self.batch_controller.queue.has_work():
+            self.batch_view.set_notice("没有待运行的任务——已完成的不会重跑，可点「清空已完成」后重新添加。")
+            return
+        conflict = engine_lang_conflict(
+            self.batch_view.engine_combo.currentData(), self.batch_view.lang_combo.currentData())
+        if conflict:
+            QtWidgets.QMessageBox.warning(self, "引擎不匹配", conflict)
+            return
+
+        apply_model_dir(self.settings.model_dir)
+        # 队列里所有任务共用批量页的引擎/语言/方向选择 + 当前设置，先按同一个代表性
+        # cfg 过一次模型就绪门槛（和单任务 _on_start 同一个检查），不齐就先让用户去
+        # 模型管理页补齐，避免队列跑到第一个任务才在后台线程报模型缺失。
+        probe_cfg = self.settings.to_config(JobRequest(
+            input_path="", source_lang=self.batch_view.lang_combo.currentData(),
+            engine=self.batch_view.engine_combo.currentData()))
+        not_ready = self._models_not_ready_message(probe_cfg)
+        if not_ready:
+            QtWidgets.QMessageBox.warning(self, "模型未就绪", not_ready)
+            self.centralWidget().setCurrentWidget(self.model_view)
+            return
+
+        self.batch_view.clear_log()
+        self.batch_view.set_notice("")
+        self.batch_controller.start(self._batch_prepare)
+
+    def _batch_prepare(self, job):
+        """批量页选择 + 持久化设置 → (JobRequest, Config)。每个任务一份独立配置，
+        工作目录按各自输入推导（Runner._work_dir），队列语义是"N 个独立任务"，不是
+        "一个大任务"——指向系列根目录的文件夹输入仍是递归的一个大任务，这是文件夹
+        输入本身的语义，批量页不会替用户拆卷。"""
+        request = JobRequest(
+            input_path=job.input_path,
+            output_path=job.output_path,
+            source_lang=self.batch_view.lang_combo.currentData(),
+            engine=self.batch_view.engine_combo.currentData(),
+            direction=self.batch_view.dir_combo.currentData(),
+            is_rerender=False,
+        )
+        return request, self.settings.to_config(request)
+
+    def _on_batch_queue_changed(self):
+        self.batch_view.set_jobs(self.batch_controller.queue.jobs())
+
+    def _on_batch_job_started(self, i: int, total: int):
+        self.batch_view.set_position_text(f"第 {i + 1}/{total} 个任务")
+        self.status_lbl.setText(f"批量队列：第 {i + 1}/{total} 个任务")
+
+    def _on_batch_job_progress(self, fraction: float, desc: str):
+        self.batch_view.set_progress(fraction, desc)
+        self.status_progress.setVisible(True)
+        self.status_progress.setValue(int(fraction * 100))
+        self.status_lbl.setText(f"批量：{desc}")
+
+    def _on_batch_state_changed(self, state: str):
+        running = state == STATE_RUNNING
+        self.batch_view.set_batch_running(running)
+        self.translate_view.set_blocked(running)
+        if running:
+            self.status_lbl.setText("批量队列运行中…")
+        else:
+            if not self.job_controller.is_busy():
+                self.status_progress.setVisible(False)
+            self.status_lbl.setText("就绪")
+
+    def _on_batch_queue_finished(self):
+        c = self.batch_controller.queue.counts()
+        self.batch_view.set_position_text(f"共 {c['total']} 个任务")
+        self.batch_view.clear_progress()
+        self.batch_view.set_notice(f"队列结束：成功 {c['done']}，失败 {c['failed']}")
+        self.status_lbl.setText(f"批量队列完成：成功 {c['done']}，失败 {c['failed']}")
+
+    def _on_batch_open_output(self, job):
+        out = job.resolved_output or job.output_path
+        if not out:
+            self.batch_view.set_notice("该任务还没有输出，等它跑完再打开。")
+            return
+        target = Path(out)
+        if target.is_file():
+            target = target.parent
+        if target.exists():
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(target)))
+        else:
+            self.batch_view.set_notice(f"输出位置不存在：{out}")
+
+    def _on_batch_review(self, job):
+        if self._any_job_busy():
+            QtWidgets.QMessageBox.information(self, "提示", "有任务正在运行，请先等待完成。")
+            return
+        work_dir = self._batch_job_work_dir(job)
+        if work_dir is None:
+            self.batch_view.set_notice("该任务还没有可校对的产物（没有输出或尚未完成）。")
+            return
+        self._open_review_dir(str(work_dir))
+
+    def _batch_job_work_dir(self, job) -> Path | None:
+        """从队列任务解析其翻译工作目录：压缩包/PDF 的输出是文件，工作目录在
+        <输出名去扩展>/ 下；文件夹输入的输出就是工作目录本身。"""
+        out = job.resolved_output or job.output_path
+        if not out:
+            return None
+        pages = resolve_pages_json(Path(out))
+        if not pages.exists():
+            return None
+        return pages.parent
+
     # ------------------------------------------------------------ 校对
     def _on_review_open(self):
-        if self.job_controller.is_busy():
+        if self._any_job_busy():
             QtWidgets.QMessageBox.information(self, "提示", "有任务正在运行，请先等待完成。")
             return
         start_dir = str(self._last_completed_output_path) if self._last_completed_output_path \
@@ -576,7 +775,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_review_open_last(self):
         """「校对本次结果」：直接打开最近一次完成任务的工作目录，不用再浏览定位。
         这是"结果查看 → 校对"闭环的最后一跳，之前只能靠手动浏览去找输出目录。"""
-        if self.job_controller.is_busy():
+        if self._any_job_busy():
             QtWidgets.QMessageBox.information(self, "提示", "有任务正在运行，请先等待完成。")
             return
         if self._last_completed_output_path is None:
@@ -585,12 +784,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _open_review_dir(self, d: str):
         apply_model_dir(self.settings.model_dir)
+        # 传入的可能是"文件夹输入"的输出目录（本身就在 pages.json 旁），也可能是
+        # 压缩包/PDF 输入的最终输出文件（如 xxx_translated.cbz，工作目录在
+        # xxx_translated/ 下）——统一用 resolve_pages_json 定位 pages.json 所在目录。
+        # 之前直接拿 d 当工作目录，压缩包输入的结果从"校对本次结果"打开会报
+        # "找不到 pages.json"（ReviewSession 收到的是输出文件路径，不是目录）。
+        work_dir = resolve_pages_json(Path(d)).parent
         # 校对/单页重渲染要用产生这批结果时的原始配置（模型路径、设备、字体……），
         # 不是设置页里现在恰好显示的值——job.json 有就优先用它，没有才退回当前设置。
         fallback_cfg = self.settings.to_config(JobRequest(input_path=""))
-        cfg = load_config_for_review(d, fallback_cfg)
+        cfg = load_config_for_review(work_dir, fallback_cfg)
         try:
-            self._review_session = ReviewSession(d, cfg)
+            self._review_session = ReviewSession(work_dir, cfg)
         except ComicGenError as e:
             QtWidgets.QMessageBox.warning(self, "无法打开", e.user_message)
             return
@@ -619,7 +824,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_review_rerender(self, image: str):
         if self._review_session is None:
             return
-        if self.job_controller.is_busy():
+        if self._any_job_busy():
             QtWidgets.QMessageBox.information(self, "提示", "有任务正在运行，请先等待完成。")
             return
         # 同一套重入保护（FirstRunDialog 实测复现过丢引用导致 0xC0000409 的那类崩溃）：
@@ -655,7 +860,7 @@ class MainWindow(QtWidgets.QMainWindow):
         相同的 Runner.rerender 路径（用校对会话的工作目录做 work_dir_override、
         用它存的那份原始配置），把校对修改真正落进交付物。
         """
-        if self.job_controller.is_busy():
+        if self._any_job_busy():
             QtWidgets.QMessageBox.information(self, "提示", "有任务正在运行，请先等待完成。")
             return
         if self._review_session is None:
@@ -701,6 +906,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # ------------------------------------------------------------ 关闭
     def closeEvent(self, event: QtGui.QCloseEvent):
         self.job_controller.shutdown()
+        self.batch_controller.stop()
         if self._m_cancel_event is not None:
             self._m_cancel_event.set()
         self._wait_for_shutdown_threads()
@@ -716,16 +922,25 @@ class MainWindow(QtWidgets.QMainWindow):
         （"QThread: Destroyed while thread is still running"，任务看似"关掉了"
         实际还在后台跑/可能崩）。改成：取消已请求，给任务线程一个宽松上限，期间
         泵事件循环让 UI 保持响应，状态栏说明在等什么；上限到了才强制继续。
+        批量队列和单任务用同一个 Runner、同一个宽松上限——两个入口只会有一个在跑。
         """
-        job_thread = self.job_controller._thread
-        if job_thread is not None and job_thread.isRunning():
+        job_like = [
+            t for t in (self.job_controller._thread, self.batch_controller._thread)
+            if t is not None and t.isRunning()
+        ]
+        if job_like:
             self.status_lbl.setText("正在等待任务安全停止（当前页处理完即退出）…")
             deadline = time.monotonic() + _SHUTDOWN_JOB_WAIT_S
-            while job_thread.isRunning() and time.monotonic() < deadline:
-                job_thread.wait(200)
+            while time.monotonic() < deadline:
+                if not any(t.isRunning() for t in job_like):
+                    break
+                for t in job_like:
+                    t.wait(200)
                 QtWidgets.QApplication.processEvents()
-            if job_thread.isRunning():
-                self.log(f"[警告] 任务线程 {_SHUTDOWN_JOB_WAIT_S}s 内未停止，强制退出")
+            for t in job_like:
+                if t.isRunning():
+                    self.status_lbl.setText(
+                        f"任务线程 {_SHUTDOWN_JOB_WAIT_S}s 内未停止，已强制关闭（进度已落盘）")
 
         # 模型/扫描/自检线程同样要等收尾，不能只处理翻译任务的线程——直接退出会让还在跑的
         # QThread 对象在解释器关闭时失去引用，是 FirstRunDialog.closeEvent 已经用同样

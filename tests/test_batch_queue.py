@@ -111,6 +111,22 @@ def test_counts_summary():
     assert c["total"] == 4 and c["done"] == 2 and c["failed"] == 1 and c["pending"] == 1
 
 
+def test_has_work_true_only_for_pending_or_rerunnable():
+    q = BatchQueue()
+    q.add("a.zip")  # pending
+    assert q.has_work() is True
+    q.jobs()[0].status = QUEUE_STATUS_OK
+    assert q.has_work() is False
+    q.jobs()[0].status = QUEUE_STATUS_FAILED
+    assert q.has_work() is True
+    q.jobs()[0].status = QUEUE_STATUS_CANCELLED
+    assert q.has_work() is True
+    q.jobs()[0].status = QUEUE_STATUS_PARTIAL
+    assert q.has_work() is True
+    q.jobs()[0].status = QUEUE_STATUS_RUNNING
+    assert q.has_work() is False
+
+
 def test_display_output_falls_back():
     assert BatchJob(input_path="a.zip").display_output == "（默认推导）"
     assert BatchJob(input_path="a.zip", output_path="out").display_output == "out"

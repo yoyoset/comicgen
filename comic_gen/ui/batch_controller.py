@@ -49,6 +49,7 @@ class BatchController(QtCore.QObject):
         self._prepare: Callable[[BatchJob], tuple] | None = None  # job -> (JobRequest, Config)
         self._current_index = -1
         self._stopped = False
+        self._retired_threads: list[QtCore.QThread] = []  # 极端情况下没等停的旧线程，保引用防 GC 崩
 
     # ------------------------------------------------------------ 状态
     @property
@@ -106,6 +107,12 @@ class BatchController(QtCore.QObject):
         self._cancel_event.set()
 
     def _run_next(self) -> None:
+        # 换新线程前必须先让上一个任务的 QThread 完全退出：worker.finished 触发
+        # _on_worker_finished 时，_thread.quit() 还排在主线程事件队列里没执行，旧线程
+        # 的事件循环仍在跑；这里如果直接 self._thread = QtCore.QThread() 覆盖引用，
+        # CPython 立刻回收旧 QThread 包装对象，C++ 层 QThread 在 running 中被销毁会
+        # 触发 Qt 的致命错误（实测：批量队列跑第一个任务结束就崩 0xC0000409）。
+        self._reap_thread()
         job = self.queue.next_pending()
         if job is None:
             self._set_state(STATE_IDLE)
@@ -128,6 +135,23 @@ class BatchController(QtCore.QObject):
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.finished.connect(self._thread.quit)
         self._thread.start()
+
+    def _reap_thread(self) -> None:
+        """等上一个任务的 QThread 真正退出，再允许换新线程（见 _run_next 的崩溃注释）。
+
+        阻塞主线程最多 1s：此时 worker.run() 已经返回（finished 都发出来了），线程
+        只是停在事件循环里等 quit()，正常情况 wait() 几乎立即返回。wait() 超时（理论上
+        只有 finished 在 run() 返回前被主线程抢到的那几毫秒窗口）就把旧线程收进
+        _retired_threads 保着引用——宁可多个对象占用内存，也不能让 GC 在 running 中
+        销毁 QThread（那会 0xC0000409）。
+        """
+        old = self._thread
+        self._thread = None
+        if old is not None:
+            if old.isRunning():
+                old.quit()
+                if not old.wait(1000):
+                    self._retired_threads.append(old)
 
     def _on_worker_finished(self, result) -> None:
         if self._current_index < 0 or self._current_index >= len(self.queue.jobs()):

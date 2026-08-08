@@ -53,6 +53,9 @@ class TranslateView(QtWidgets.QWidget):
         self._preview_images: list[Path] = []
         self._preview_offset = 0
         self._last_output: str | None = None
+        self._running = False      # 单任务自己是否正在跑
+        self._blocked = False      # 批量队列运行中，单任务入口整体禁用
+        self._review_available = False
         self._build()
 
     def _build(self):
@@ -233,16 +236,32 @@ class TranslateView(QtWidgets.QWidget):
         self._last_browse_dir = d or ""
 
     def set_running(self, running: bool):
-        self.start_btn.setEnabled(not running)
-        self.rerender_btn.setEnabled(not running)
+        self._running = running
         self.stop_btn.setEnabled(running)
         if not running:
             # 任务结束/取消后清掉上一轮的阶段描述，避免"还停在 OCR 42/200"的残留误导
             self.progress_lbl.setText("")
+        self._refresh_action_buttons()
+
+    def set_blocked(self, blocked: bool):
+        """批量队列运行中：单任务入口（开始/重渲染/校对）整体禁用。
+
+        真正的互斥靠 MainWindow 各入口的 is_busy 拦截，这里只做视觉上的"此刻不能点"，
+        避免用户对着可点的按钮点下去却被弹窗拒绝——两件事都要有。
+        """
+        self._blocked = blocked
+        self._refresh_action_buttons()
+
+    def _refresh_action_buttons(self):
+        enabled = not self._running and not self._blocked
+        self.start_btn.setEnabled(enabled)
+        self.rerender_btn.setEnabled(enabled)
+        self.review_btn.setEnabled(enabled and self._review_available)
 
     def set_review_available(self, available: bool):
         """任务成功/部分完成后点亮"校对本次结果"，开始新任务时由 MainWindow 关掉。"""
-        self.review_btn.setEnabled(available)
+        self._review_available = available
+        self._refresh_action_buttons()
 
     def append_log(self, msg: str):
         self.log_edit.appendPlainText(msg)

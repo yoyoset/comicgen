@@ -95,3 +95,11 @@ class BatchQueue:
         failed = sum(1 for j in self._jobs if j.status in (QUEUE_STATUS_FAILED, QUEUE_STATUS_CANCELLED))
         pending = sum(1 for j in self._jobs if j.status in (QUEUE_STATUS_PENDING, QUEUE_STATUS_RUNNING))
         return {"total": total, "done": done, "failed": failed, "pending": pending}
+
+    def has_work(self) -> bool:
+        """队列里还有没有要跑的：排队中的，或失败/部分完成/已取消可重跑的。
+
+        全队都是「完成」时点「开始队列」没有意义（已完成的任务不会被重跑）——
+        UI 用这个判断是直接开始还是先给一句内联提示，避免"点开始却瞬间结束"的困惑。
+        """
+        return any(j.status == QUEUE_STATUS_PENDING or j.status in _RERUNNABLE for j in self._jobs)
