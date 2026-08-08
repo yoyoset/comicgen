@@ -227,6 +227,9 @@ class TranslateView(QtWidgets.QWidget):
         self.start_btn.setEnabled(not running)
         self.rerender_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
+        if not running:
+            # 任务结束/取消后清掉上一轮的阶段描述，避免"还停在 OCR 42/200"的残留误导
+            self.progress_lbl.setText("")
 
     def set_review_available(self, available: bool):
         """任务成功/部分完成后点亮"校对本次结果"，开始新任务时由 MainWindow 关掉。"""

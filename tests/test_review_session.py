@@ -62,6 +62,13 @@ def test_page_images_and_get_page(tmp_path):
     assert session.get_page("page_0.png").regions[0].translated_text == "你好"
 
 
+def test_original_input_property_exposes_input_fingerprint(tmp_path):
+    """「导出全部」需要原始输入路径来定位原图/推导输出路径——会话要把它暴露出来。"""
+    work_dir, input_dir = _make_work_dir(tmp_path, _sample_pages())
+    session = ReviewSession(work_dir, Config())
+    assert session.original_input == str(input_dir.resolve())
+
+
 def test_attention_items_flags_low_score_empty_ocr_and_missing_translation(tmp_path):
     work_dir, _ = _make_work_dir(tmp_path, _sample_pages())
     session = ReviewSession(work_dir, Config())

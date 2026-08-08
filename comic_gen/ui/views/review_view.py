@@ -96,9 +96,14 @@ class ReviewView(QtWidgets.QWidget):
 
         btn_row = QtWidgets.QHBoxLayout()
         self.apply_btn = QtWidgets.QPushButton("应用译文")
-        self.apply_btn.setToolTip("只保存文字修改，不重新生成图片")
+        self.apply_btn.setToolTip("只保存文字修改，不重新生成图片（快捷键 Ctrl+Enter）")
         self.apply_btn.clicked.connect(self._on_apply_clicked)
         btn_row.addWidget(self.apply_btn)
+        # Ctrl+Enter 直接应用当前译文，不必每次都把鼠标挪到按钮上——校对大量区域时
+        # 每少一次点击都是一次真实的减负。不用裸 Enter：QPlainTextEdit 里 Enter 是
+        # 换行，译文可能多行。
+        self._apply_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Return"), self)
+        self._apply_shortcut.activated.connect(self._on_apply_clicked)
         self.rerender_btn = QtWidgets.QPushButton("重渲染本页")
         self.rerender_btn.setToolTip("只重新生成这一页的图片，不影响其它页，也不重新打包最终产物")
         self.rerender_btn.clicked.connect(self._on_rerender_clicked)
