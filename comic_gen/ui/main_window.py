@@ -125,6 +125,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.review_view.pageSelected.connect(self._on_review_page_selected)
         self.review_view.applyTextRequested.connect(self._on_review_apply_text)
         self.review_view.rerenderRequested.connect(self._on_review_rerender)
+        self.review_view.exportRequested.connect(self._on_review_export)
         self.review_view.attentionItemActivated.connect(self._on_review_attention_activated)
 
         self.job_controller.stateChanged.connect(self._on_job_state_changed)
@@ -595,6 +596,50 @@ class MainWindow(QtWidgets.QMainWindow):
         pixmap = QtGui.QPixmap(str(result))
         self.review_view.show_page(image, pixmap, page.regions)
         self.review_view.refresh_attention(self._review_attention_tuples())
+
+    def _on_review_export(self):
+        """校对页「导出全部」：重新抹字渲染全部页面并重新打包最终输出。
+
+        单页重渲染只更新工作目录 translated/ 里的图，不会更新最终交付物（文件夹
+        根目录的散图 / zip / pdf）——如果用户以为"校对改过了"就完成了，拿到手的
+        输出其实是旧图，这是"界面看着完成、产物没跟上"的坑。这里走和「重渲染」
+        相同的 Runner.rerender 路径（用校对会话的工作目录做 work_dir_override、
+        用它存的那份原始配置），把校对修改真正落进交付物。
+        """
+        if self.job_controller.is_busy():
+            QtWidgets.QMessageBox.information(self, "提示", "有任务正在运行，请先等待完成。")
+            return
+        if self._review_session is None:
+            return
+        original_input = self._review_session.original_input
+        if not original_input:
+            QtWidgets.QMessageBox.warning(self, "无法导出", "找不到原始输入记录，无法重新打包。")
+            return
+        if QtWidgets.QMessageBox.question(
+            self, "导出全部",
+            "将重新抹字渲染全部页面并重新打包最终输出，把校对修改落进交付物。\n"
+            "需要 GPU 推理，耗时取决于页数；未改动的页也会重跑一遍渲染以保证产物一致。\n\n继续？",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        ) != QtWidgets.QMessageBox.Yes:
+            return
+
+        cfg = self._review_session.cfg
+        request = JobRequest(
+            input_path=original_input, output_path=None,
+            source_lang=cfg.source_lang, engine=cfg.translator, direction=cfg.direction,
+            is_rerender=True, work_dir_override=str(self._review_session.work_dir),
+        )
+        apply_model_dir(self.settings.model_dir)
+        self.translate_view.clear_log()
+        self.status_progress.setVisible(True)
+        self.status_progress.setValue(0)
+        self.translate_view.set_review_available(False)
+        self._pending_request = request
+        try:
+            self.job_controller.start(request, cfg)
+        except RuntimeError as e:
+            QtWidgets.QMessageBox.warning(self, "提示", str(e))
 
     def _on_review_attention_activated(self, image: str, region_index: int):
         if self._review_session is None:

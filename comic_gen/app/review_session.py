@@ -78,6 +78,12 @@ class ReviewSession:
         self._orig_map: dict[str, Path] = dict(zip(loaded.rel_names, loaded.pages))
         self._inpainter_cache: EngineCache = EngineCache()
 
+    @property
+    def original_input(self) -> str | None:
+        """最初翻译时的原始输入路径（pages.json 里的 input 指纹），
+        重新打包/导出时需要它来定位原图与推导输出路径。"""
+        return self._input_fingerprint
+
     # ------------------------------------------------------------ 只读
     def page_images(self) -> list[str]:
         return [p.image for p in self.pages]

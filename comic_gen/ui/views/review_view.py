@@ -42,6 +42,7 @@ class ReviewView(QtWidgets.QWidget):
     pageSelected = QtCore.Signal(str)                    # image
     applyTextRequested = QtCore.Signal(str, int, str)     # image, region_index, translated_text
     rerenderRequested = QtCore.Signal(str)                # image
+    exportRequested = QtCore.Signal()                     # 重新抹字渲染全部页 + 重新打包最终输出
     attentionItemActivated = QtCore.Signal(str, int)      # image, region_index（-1 = 整页问题，只跳页不选框）
 
     def __init__(self, parent=None):
@@ -102,6 +103,11 @@ class ReviewView(QtWidgets.QWidget):
         self.rerender_btn.setToolTip("只重新生成这一页的图片，不影响其它页，也不重新打包最终产物")
         self.rerender_btn.clicked.connect(self._on_rerender_clicked)
         btn_row.addWidget(self.rerender_btn)
+        self.export_btn = QtWidgets.QPushButton("导出全部…")
+        self.export_btn.setToolTip("重新抹字渲染全部页面并重新打包最终输出——把校对修改真正落进交付物"
+                                   "（单页重渲染只更新工作目录里的图，不会更新最终包）")
+        self.export_btn.clicked.connect(self.exportRequested)
+        btn_row.addWidget(self.export_btn)
         side_lay.addLayout(btn_row)
 
         side_lay.addWidget(QtWidgets.QLabel("需要注意"))
@@ -114,6 +120,7 @@ class ReviewView(QtWidgets.QWidget):
 
         self._set_editing_enabled(False)
         self.rerender_btn.setEnabled(False)
+        self.export_btn.setEnabled(False)
 
     # ------------------------------------------------------------ 供 MainWindow 推数据进来
     def set_work_dir_label(self, text: str):
@@ -128,6 +135,8 @@ class ReviewView(QtWidgets.QWidget):
         self.page_list.addItems(images)
         self.page_list.blockSignals(False)
         self.refresh_attention(attention)
+        # 打开了一个工作目录就可以导出（重新打包）
+        self.export_btn.setEnabled(bool(images))
         if images:
             self.page_list.setCurrentRow(0)
 
@@ -181,6 +190,7 @@ class ReviewView(QtWidgets.QWidget):
     def set_busy(self, busy: bool):
         self.open_btn.setEnabled(not busy)
         self.rerender_btn.setEnabled(not busy and self._current_image is not None)
+        self.export_btn.setEnabled(not busy and self._current_image is not None)
         # 重渲染是 GPU 推理，可能数秒——给个可见的状态，而不是按钮一灰就毫无反馈
         self.busy_lbl.setText("重渲染本页中…" if busy else "")
 
