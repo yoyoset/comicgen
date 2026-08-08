@@ -26,3 +26,23 @@ def test_unexpected_exception_includes_full_traceback():
     assert "失败：boom" in result
     assert "Traceback" in result
     assert "RuntimeError" in result
+
+
+def test_oserror_gets_friendly_message_without_traceback():
+    """OSError（路径无效/无写权限/磁盘满）是用户最常撞的失败，不该把整段 Python 堆栈
+    糊给用户——OSError 消息本身带失败路径和 errno，够定位。完整堆栈仍由调用方落 run.log。"""
+    e = PermissionError(13, "拒绝访问", r"D:\readonly\pages.json")
+    result = format_job_failure(e)
+    assert "失败" in result
+    assert "文件操作失败" in result
+    assert "Traceback" not in result  # 不糊堆栈
+    assert "pages.json" in result  # 但保留失败路径
+
+
+def test_oserror_file_not_found_is_friendly():
+    try:
+        raise FileNotFoundError(2, "找不到文件", "missing.png")
+    except OSError as e:
+        result = format_job_failure(e)
+    assert "Traceback" not in result
+    assert "missing.png" in result

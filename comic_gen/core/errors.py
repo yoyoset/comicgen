@@ -55,7 +55,16 @@ def format_job_failure(e: Exception) -> str:
     traceback.format_exc() 糊在后面会把这句话埋在一堆 Python 堆栈下面。其它未预期
     的异常仍然带全部 traceback——那类失败往往是真的程序 bug，需要完整诊断信息，
     不能藏起来。
+
+    OSError 单独处理：用户最常撞的"路径无效 / 无写权限 / 磁盘满"都落在这里，不是
+    程序 bug。OSError 消息本身就带失败路径和 errno，够定位；完整堆栈仍会进
+    run.log（ui/workers.py 的 except 分支负责落盘），对话框不需要再糊一段堆栈。
     """
     if isinstance(e, ComicGenError):
         return f"失败：{e.user_message}"
+    if isinstance(e, OSError):
+        return (
+            f"失败：文件操作失败：{e}\n"
+            "请检查输出位置是否可写、路径是否有效、磁盘空间是否充足。"
+        )
     return f"失败：{e}\n{traceback.format_exc()}"

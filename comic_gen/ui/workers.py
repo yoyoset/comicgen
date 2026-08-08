@@ -88,6 +88,9 @@ class PipelineWorker(QtCore.QObject):
             self.runner.log(f"[失败] {e.technical}")  # 技术细节记日志，不丢
             self.finished.emit(format_job_failure(e))
         except Exception as e:
+            # 未预期的异常：完整堆栈进 run.log（对话框可能只展示 format_job_failure 的
+            # 人话部分，比如 OSError 的友好提示），技术细节不能因为 UI 简化就丢掉。
+            self.runner.log(f"[失败] {traceback.format_exc()}")
             self.finished.emit(format_job_failure(e))
 
 

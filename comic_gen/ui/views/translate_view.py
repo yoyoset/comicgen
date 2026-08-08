@@ -303,7 +303,3 @@ class TranslateView(QtWidgets.QWidget):
         path = item.data(QtCore.Qt.UserRole)
         if path:
             QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
-
-    def rerender_source_path(self) -> str:
-        """重渲染的定位来源：优先输出路径，为空则用输入路径（同一次任务的产物）。"""
-        return self.output_edit.text().strip().strip('"') or self.input_edit.text().strip().strip('"')
