@@ -264,6 +264,14 @@ class Runner:
         trans_dir = ensure_dir(work_dir / "translated")
 
         pages = self._init_pages(loaded, work_dir, rerender)
+        # 全新任务（没有任何页面命中缓存）时清空 translated/：里面只可能是上一个
+        # 不同输入/旧任务留下的图，全部会被重渲染覆盖，留着只占磁盘、且可能让校对
+        # 预览读到错图。续跑/重渲染（有已处理页）时保留——部分页的重渲染图不能丢。
+        if not any(p.status != STATUS_PENDING for p in pages):
+            stale_trans = work_dir / "translated"
+            if stale_trans.exists():
+                shutil.rmtree(stale_trans)
+            trans_dir = ensure_dir(work_dir / "translated")
         # 磁盘预检必须赶在 _save_pages 之前——否则 pages.json 一写出来，"有没有缓存"
         # 这个判定就永远是"有"，预检对全新任务就永远不执行了。
         self._check_output_space(work_dir, loaded.pages)
@@ -284,142 +292,148 @@ class Runner:
         def open_page(p: Page) -> Image.Image:
             return Image.open(page_img[p.image]).convert("RGB")
 
-        def cancelled() -> bool:
-            if should_cancel is None:
-                return False
-            try:
-                return bool(should_cancel())
-            except Exception:
-                return False
-
         # 每个阶段间隙检查取消：当前页处理完、落盘后才退出，pages.json 始终完好。
         # 命中取消直接返回，跳过 pack_output（不产出不完整的最终包）。
+        # 四阶段的循环骨架完全相同（todo 过滤、取消检查、逐页 try/落盘/进度、阶段计时），
+        # 只有"每页做什么"不同——统一走 _run_stage，不再四处各写一份几乎一样的 15 行循环。
 
         # 1. 检测
         todo = [p for p in pages if p.status == STATUS_PENDING]
         if todo:
-            stage_start = time.monotonic()
             from .detect import reading_order
 
             det = self._get_detector()
             rtl = self.cfg.source_lang == "ja"
-            for i, p in enumerate(todo):
-                if cancelled():
-                    self.log("已停止（检测阶段）")
-                    return JobReport.cancelled(pages, output_path)
-                try:
-                    p.regions = reading_order(det.detect(open_page(p)), rtl=rtl)
-                    p.width, p.height = Image.open(page_img[p.image]).size
-                    p.status = STATUS_DETECTED
-                    p.error = ""
-                    p.error_stage = ""
-                except Exception as e:
-                    p.error = f"检测失败: {e}"
-                    p.error_stage = Stage.DETECT.value
-                    self.log(f"[警告] {p.image} 检测失败: {e}")
-                self._save_pages(work_dir, pages, input_path)
-                self._progress(progress, "detect", i + 1, len(todo))
-            stage_timings[Stage.DETECT.value] = {
-                "duration_s": round(time.monotonic() - stage_start, 2), "page_count": len(todo),
-            }
-            self._save_job_snapshot(work_dir, resolved_model_paths, stage_timings)
+
+            def _detect_page(p):
+                p.regions = reading_order(det.detect(open_page(p)), rtl=rtl)
+                p.width, p.height = Image.open(page_img[p.image]).size
+                p.status = STATUS_DETECTED
+
+            report = self._run_stage(
+                work_dir, pages, input_path, output_path, todo, Stage.DETECT.value,
+                cancel_label="检测", error_prefix="检测失败", progress_label="detect",
+                should_cancel=should_cancel, progress=progress,
+                resolved_model_paths=resolved_model_paths, stage_timings=stage_timings,
+                per_page=_detect_page,
+            )
+            if report is not None:
+                return report
 
         # 2. OCR
         todo = [p for p in pages if p.status == STATUS_DETECTED]
         if todo:
-            stage_start = time.monotonic()
             ocr = self._get_ocr()
-            for i, p in enumerate(todo):
-                if cancelled():
-                    self.log("已停止（OCR 阶段）")
-                    return JobReport.cancelled(pages, output_path)
-                try:
-                    ocr.recognize_regions(open_page(p), p.regions)
-                    p.status = STATUS_OCRED
-                    p.error = ""
-                    p.error_stage = ""
-                except Exception as e:
-                    p.error = f"OCR 失败: {e}"
-                    p.error_stage = Stage.OCR.value
-                    self.log(f"[警告] {p.image} OCR 失败: {e}")
-                self._save_pages(work_dir, pages, input_path)
-                self._progress(progress, "ocr", i + 1, len(todo))
-            stage_timings[Stage.OCR.value] = {
-                "duration_s": round(time.monotonic() - stage_start, 2), "page_count": len(todo),
-            }
-            self._save_job_snapshot(work_dir, resolved_model_paths, stage_timings)
 
-        # 3. 翻译
+            def _ocr_page(p):
+                ocr.recognize_regions(open_page(p), p.regions)
+                p.status = STATUS_OCRED
+
+            report = self._run_stage(
+                work_dir, pages, input_path, output_path, todo, Stage.OCR.value,
+                cancel_label="OCR", error_prefix="OCR 失败", progress_label="ocr",
+                should_cancel=should_cancel, progress=progress,
+                resolved_model_paths=resolved_model_paths, stage_timings=stage_timings,
+                per_page=_ocr_page,
+            )
+            if report is not None:
+                return report
+
+        # 3. 翻译（四阶段里最贵：LLM 推理，一页数秒到数十秒，必须逐页落盘——
+        # 崩溃/断电/强杀只丢"当前这一页"，重启后从断点续，不重译已完成的页）
         todo = [p for p in pages if p.status == STATUS_OCRED]
         if todo:
-            stage_start = time.monotonic()
             translator = self._get_translator()
-            for i, p in enumerate(todo):
-                if cancelled():
-                    self.log("已停止（翻译阶段）")
-                    self._save_pages(work_dir, pages, input_path)
-                    return JobReport.cancelled(pages, output_path)
+
+            def _translate_page(p):
                 regions = [r for r in p.regions if r.source_text.strip()]
                 if regions:
-                    texts = [r.source_text for r in regions]
-                    try:
-                        results = translator.translate(texts, self.cfg)
-                        for r, t in zip(regions, results):
-                            r.translated_text = t
-                        p.status = STATUS_TRANSLATED
-                        p.error = ""
-                        p.error_stage = ""
-                    except Exception as e:
-                        p.error = f"翻译失败: {e}"
-                        p.error_stage = Stage.TRANSLATE.value
-                        self.log(f"[警告] {p.image} 翻译失败: {e}")
-                else:
-                    p.status = STATUS_TRANSLATED
-                    p.error = ""
-                    p.error_stage = ""
-                # 翻译是四阶段里最贵的一步（LLM 推理，一页数秒到数十秒），之前这里的
-                # _save_pages 在循环外，只在整批翻完后落一次盘——崩溃/断电/强杀会丢掉
-                # 这一整批已经跑完的译文，重启后要全部重译。改成逐页落盘，和另外三个
-                # 阶段（检测/OCR/渲染）保持一致。
-                self._save_pages(work_dir, pages, input_path)
-                self._progress(progress, "translate", i + 1, len(todo))
-            stage_timings[Stage.TRANSLATE.value] = {
-                "duration_s": round(time.monotonic() - stage_start, 2), "page_count": len(todo),
-            }
-            self._save_job_snapshot(work_dir, resolved_model_paths, stage_timings)
+                    results = translator.translate([r.source_text for r in regions], self.cfg)
+                    for r, t in zip(regions, results):
+                        r.translated_text = t
+                # 没有原文的区域也要推进状态，不能卡住后面的渲染阶段
+                p.status = STATUS_TRANSLATED
+
+            report = self._run_stage(
+                work_dir, pages, input_path, output_path, todo, Stage.TRANSLATE.value,
+                cancel_label="翻译", error_prefix="翻译失败", progress_label="translate",
+                should_cancel=should_cancel, progress=progress,
+                resolved_model_paths=resolved_model_paths, stage_timings=stage_timings,
+                per_page=_translate_page,
+            )
+            if report is not None:
+                return report
 
         # 4. 抹字 + 渲染
         todo = [p for p in pages if p.status == STATUS_TRANSLATED]
         if todo:
-            stage_start = time.monotonic()
             inpainter = self._get_inpainter()
-            for i, p in enumerate(todo):
-                if cancelled():
-                    self.log("已停止（渲染阶段）")
-                    return JobReport.cancelled(pages, output_path)
-                try:
-                    out_img = render_single_page(open_page(p), p, self.cfg, inpainter, log=self.log)
-                    out_path = trans_dir / p.image
-                    # 原子写图：进程被杀在写盘中途时不留下截断 PNG 被校对页读到
-                    atomic_save_image(out_img, out_path)
-                    p.status = STATUS_RENDERED
-                    p.error = ""
-                    p.error_stage = ""
-                except Exception as e:
-                    p.error = f"抹字渲染失败: {e}"
-                    p.error_stage = Stage.RENDER.value
-                    self.log(f"[警告] {p.image} 抹字渲染失败: {e}")
-                self._save_pages(work_dir, pages, input_path)
-                self._progress(progress, "render", i + 1, len(todo))
-            stage_timings[Stage.RENDER.value] = {
-                "duration_s": round(time.monotonic() - stage_start, 2), "page_count": len(todo),
-            }
-            self._save_job_snapshot(work_dir, resolved_model_paths, stage_timings)
+
+            def _render_page(p):
+                out_img = render_single_page(open_page(p), p, self.cfg, inpainter, log=self.log)
+                # 原子写图：进程被杀在写盘中途时不留下截断 PNG 被校对页读到
+                atomic_save_image(out_img, trans_dir / p.image)
+                p.status = STATUS_RENDERED
+
+            report = self._run_stage(
+                work_dir, pages, input_path, output_path, todo, Stage.RENDER.value,
+                cancel_label="渲染", error_prefix="抹字渲染失败", progress_label="render",
+                should_cancel=should_cancel, progress=progress,
+                resolved_model_paths=resolved_model_paths, stage_timings=stage_timings,
+                per_page=_render_page,
+            )
+            if report is not None:
+                return report
 
         result = pack_output(loaded, trans_dir, output_path, pdf_dpi=self.cfg.pdf_dpi, log=self.log)
         report = JobReport.from_pages(pages, result)
         self.log(f"完成: {result}（{report.summary}）")
         return report
+
+    def _run_stage(self, work_dir, pages, input_path, output_path, todo, stage, cancel_label,
+                   error_prefix, progress_label, should_cancel, progress, resolved_model_paths,
+                   stage_timings, per_page) -> JobReport | None:
+        """跑一个流水线阶段（todo 里的页面逐一处理）。
+
+        返回取消时的 JobReport（调用方直接 return），正常完成返回 None。
+        per_page(p) 负责一页在这个阶段的真正工作并置目标状态；异常在这里统一落
+        error/error_stage（core.errors.Stage 的字符串值），并逐页落盘——这是断点续跑
+        的根基，四个阶段共用同一套骨架，改取消/落盘/计时要同步改一处而不是四处。
+        """
+        if not todo:
+            return None
+        stage_start = time.monotonic()
+        for i, p in enumerate(todo):
+            if self._cancelled(should_cancel):
+                self.log(f"已停止（{cancel_label}阶段）")
+                # 取消前防御性再落一次盘：已处理页的进度必须可恢复
+                self._save_pages(work_dir, pages, input_path)
+                return JobReport.cancelled(pages, output_path)
+            try:
+                per_page(p)
+                p.error = ""
+                p.error_stage = ""
+            except Exception as e:
+                p.error = f"{error_prefix}: {e}"
+                p.error_stage = stage
+                self.log(f"[警告] {p.image} {error_prefix}: {e}")
+            self._save_pages(work_dir, pages, input_path)
+            self._progress(progress, progress_label, i + 1, len(todo))
+        stage_timings[stage] = {
+            "duration_s": round(time.monotonic() - stage_start, 2), "page_count": len(todo),
+        }
+        self._save_job_snapshot(work_dir, resolved_model_paths, stage_timings)
+        return None
+
+    @staticmethod
+    def _cancelled(should_cancel: Callable[[], bool] | None) -> bool:
+        """should_cancel 回调本身抛异常时按"未取消"处理——取消探测失败不该让任务崩溃。"""
+        if should_cancel is None:
+            return False
+        try:
+            return bool(should_cancel())
+        except Exception:
+            return False
 
     # ------------------------------------------------------------ 重渲染（译后编辑）
     def rerender(self, input_path: str | Path, output_path: str | Path | None = None,

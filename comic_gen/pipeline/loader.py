@@ -218,6 +218,26 @@ def _resolve_page_image(name: str, translated_dir: Path, orig_map: dict[str, Pat
     return None
 
 
+def _clean_stale_output_images(out: Path, expected_rel_names: set[str]) -> None:
+    """删除输出目录里不在当前任务页清单中的图片文件。
+
+    文件夹输入的输出目录（通常也是工作目录）在多次运行间复用：旧任务多出的页、或换过
+    输入后留下的旧图，会在最终交付物里残留——deliverable 的页数/内容比当前输入多，
+    是"污染旧任务目录"的经典问题。只删图片文件、且跳过 translated/ 与 _extract/
+    这些中间产物子目录，不动 pages.json/job.json/run.log 等状态文件（它们本来也不是
+    图片，is_image 天然过滤）。
+    """
+    protected = (out / "translated", out / "_extract")
+    for f in out.rglob("*"):
+        if not (f.is_file() and is_image(f)):
+            continue
+        if any(f.is_relative_to(root) for root in protected):
+            continue
+        rel = str(f.relative_to(out)).replace("\\", "/")
+        if rel not in expected_rel_names:
+            f.unlink(missing_ok=True)
+
+
 def pack_output(loaded: LoadedInput, translated_dir: Path, output_path: Path,
                  pdf_dpi: int = 150, log=None) -> Path:
     """把翻译后的图片按输入同构打包。log 不为 None 时，对每个回退用原图的页调用一次。"""
@@ -233,6 +253,8 @@ def pack_output(loaded: LoadedInput, translated_dir: Path, output_path: Path,
 
     if loaded.kind == "folder":
         out = ensure_dir(output_path)
+        # 输出目录复用旧任务时，先清掉不属于当前输入的图片，避免交付物里残留旧页
+        _clean_stale_output_images(out, set(loaded.rel_names))
         for name in loaded.rel_names:
             img = resolve(name)
             if img is not None:
