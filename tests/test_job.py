@@ -100,3 +100,28 @@ def test_page_failure_stage_matches_core_errors_stage_values():
 
     pf = PageFailure(image="a.png", stage=Stage.RENDER.value, message="x")
     assert pf.stage == "render"
+
+
+def test_format_failure_report_lists_every_failure_with_stage():
+    """失败报告必须逐条列出所有失败页（含阶段），不再截断到前 20 条。"""
+    from comic_gen.core.job import format_failure_report
+
+    report = JobReport.from_pages(
+        [
+            _failed_page("p01.png", "OCR 失败: 超时", stage="ocr"),
+            _failed_page("p02.png", "翻译失败: 模型未加载", stage="translate"),
+        ],
+        output_path=None,
+    )
+    text = format_failure_report(report)
+    assert "2 页失败" in text
+    assert "[ocr] p01.png：OCR 失败: 超时" in text
+    assert "[translate] p02.png：翻译失败: 模型未加载" in text
+
+
+def test_format_failure_report_without_failures():
+    from comic_gen.core.job import format_failure_report
+
+    report = JobReport.from_pages([_rendered_page("a.png")], output_path=None)
+    text = format_failure_report(report)
+    assert "0 页失败" in text

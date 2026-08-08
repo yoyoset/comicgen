@@ -9,7 +9,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ..app.review_session import ReviewSession, load_config_for_review
 from ..core.environment import apply_model_dir, detect_environment
 from ..core.errors import ComicGenError, format_job_failure
-from ..core.job import JobReport, JobRequest, read_original_input, resolve_pages_json
+from ..core.job import JobReport, JobRequest, format_failure_report, read_original_input, resolve_pages_json
 from ..core.manifest import MODEL_MANIFEST
 from ..core.settings import AppSettings
 from ..pipeline.translate import engine_lang_conflict
@@ -330,8 +330,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 if request_used:
                     self._last_completed_request = request_used
                     self._last_completed_output_path = result.output_path
-                detail = "\n".join(f"· {f.image}：{f.message}" for f in result.failed_pages[:20])
-                QtWidgets.QMessageBox.warning(self, "部分完成", f"{result.summary}\n\n{detail}")
+                self._show_failure_report(result, "部分完成")
             elif result.status == "cancelled":
                 # 之前只设了状态栏文字，JobReport.cancelled 里写好的"已完成 X/Y 页，
                 # 用相同路径重新运行即可继续"这句话从来到不了用户眼前。同时把已解析的
@@ -342,10 +341,49 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.translate_view.output_edit.setText(str(result.output_path))
                 QtWidgets.QMessageBox.information(self, "已停止", result.summary)
             else:  # failed
-                detail = "\n".join(f"· {f.image}：{f.message}" for f in result.failed_pages[:20])
-                QtWidgets.QMessageBox.critical(self, "失败", f"{result.summary}\n\n{detail}")
+                self._show_failure_report(result, "失败")
         else:
             QtWidgets.QMessageBox.critical(self, "失败", str(result))
+
+    def _show_failure_report(self, report: JobReport, title: str):
+        """失败/部分完成时弹完整报告：可滚动查看全部失败页、可导出到文件、可复制。
+        之前只截断展示前 20 条且不可滚动不可导出——几百页的任务失败信息等于没有。"""
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle(f"{title} — {report.summary}")
+        dlg.resize(720, 460)
+        lay = QtWidgets.QVBoxLayout(dlg)
+
+        text = QtWidgets.QPlainTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(format_failure_report(report))
+        lay.addWidget(text, 1)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        export_btn = QtWidgets.QPushButton("导出到文件…")
+        export_btn.clicked.connect(lambda: self._export_failure_report(dlg, report))
+        btn_row.addWidget(export_btn)
+        copy_btn = QtWidgets.QPushButton("复制全部")
+        copy_btn.clicked.connect(lambda: QtWidgets.QApplication.clipboard().setText(text.toPlainText()))
+        btn_row.addWidget(copy_btn)
+        btn_row.addStretch(1)
+        close_btn = QtWidgets.QPushButton("关闭")
+        close_btn.setDefault(True)
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(close_btn)
+        lay.addLayout(btn_row)
+
+        dlg.exec()
+
+    def _export_failure_report(self, parent, report: JobReport) -> None:
+        default = self._last_completed_output_path or Path(self.translate_view.default_dir() or ".")
+        default_file = (default if default.is_dir() else default.parent) / "失败报告.txt"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(parent, "导出失败报告", str(default_file), "文本文件 (*.txt)")
+        if not path:
+            return
+        try:
+            Path(path).write_text(format_failure_report(report), encoding="utf-8")
+        except OSError as e:
+            QtWidgets.QMessageBox.warning(parent, "导出失败", f"无法写入文件：{e}")
 
     # ------------------------------------------------------------ 模型管理
     def _start_model_worker(self, keys: list[str], do_download: bool):
