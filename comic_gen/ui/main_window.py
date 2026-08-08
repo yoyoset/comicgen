@@ -150,6 +150,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.restoreGeometry(QtCore.QByteArray.fromHex(self.settings.window_geometry_hex.encode()))
             except Exception:
                 pass
+        self._ensure_on_screen()
+
+    def _ensure_on_screen(self):
+        """恢复的窗口几何可能来自已拔掉的外接显示器——直接还原会落在屏幕外，用户启动后
+        什么都看不到（窗口"存在"但不可见，表现为"程序没打开"）。只要窗口没有和任何
+        屏幕的可用区域相交就把它挪回 (100,100)。"""
+        screens = QtWidgets.QApplication.screens()
+        if not screens:
+            return
+        try:
+            frame = self.frameGeometry()
+        except Exception:
+            return
+        visible = any(frame.intersects(screen.availableGeometry()) for screen in screens)
+        if not visible:
+            self.move(100, 100)
 
     # ------------------------------------------------------------ 菜单动作
     def _menu_open_input(self):
