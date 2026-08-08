@@ -84,6 +84,7 @@ class ModelView(QtWidgets.QWidget):
         self.log_edit = QtWidgets.QPlainTextEdit()
         self.log_edit.setReadOnly(True)
         self.log_edit.setMaximumHeight(90)
+        self.log_edit.setMaximumBlockCount(2000)  # 批量补全几十个模型的输出会很长，上限防内存无界增长
         lay.addWidget(self.log_edit)
 
     def _build_actions(self, key: str) -> QtWidgets.QWidget:

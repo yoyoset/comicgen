@@ -10,11 +10,34 @@ from pathlib import Path
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ...core.job import JobReport, JobRequest
+from ...core.utils import natural_key
 from ...pipeline.translate import ENGINE_RECOMMENDATION
 
 _LANGS = [("日文", "ja"), ("英文", "en"), ("简体中文", "zh"), ("其它", "other")]
 _ENGINES = [("Sakura（本地，日文）", "sakura"), ("通用本地 LLM（多语言）", "llm"), ("Mock（测试）", "mock")]
 _DIRS = [("自动", "auto"), ("横排", "horizontal"), ("竖排", "vertical")]
+_PREVIEW_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+_PREVIEW_PAGE_SIZE = 24
+
+
+def list_preview_images(output: str | None) -> list[Path]:
+    """列出输出产物目录 translated/ 下的图片，自然排序（page2 在 page10 前）。
+
+    纯函数，不碰 Qt：返回全部路径，是否分页、每页几张由视图决定——493 页的任务
+    一次性把几百张缩略图全塞进内存/IconMode 列表会拖慢甚至卡死界面（T4 实测）。
+    """
+    if not output:
+        return []
+    d = Path(output)
+    if d.is_file():
+        d = d.parent / d.stem
+    trans = d / "translated"
+    if not trans.exists():
+        return []
+    return sorted(
+        (p for p in trans.rglob("*") if p.suffix.lower() in _PREVIEW_IMAGE_EXTS),
+        key=lambda p: natural_key(str(p.relative_to(trans))),
+    )
 
 
 class TranslateView(QtWidgets.QWidget):
@@ -25,6 +48,8 @@ class TranslateView(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._last_browse_dir = ""
+        self._preview_images: list[Path] = []
+        self._preview_offset = 0
         self._build()
 
     def _build(self):
@@ -73,17 +98,51 @@ class TranslateView(QtWidgets.QWidget):
         lay.addRow(br)
 
         self.progress_bar = QtWidgets.QProgressBar()
-        lay.addRow("进度", self.progress_bar)
+        self.progress_lbl = QtWidgets.QLabel("")
+        self.progress_lbl.setStyleSheet("color: gray;")
+        prog_row = QtWidgets.QHBoxLayout()
+        prog_row.addWidget(self.progress_bar, 1)
+        prog_row.addWidget(self.progress_lbl)
+        lay.addRow("进度", prog_row)
 
         self.log_edit = QtWidgets.QPlainTextEdit()
         self.log_edit.setReadOnly(True)
+        # 不加上限时，几百页任务的告警会无限常驻内存（T4 实测）：进程的内存只会涨不会
+        # 回落。4000 条足够容纳一轮完整任务的核心信息，更早的仍在 <工作目录>/run.log。
+        self.log_edit.setMaximumBlockCount(4000)
+
+        log_panel = QtWidgets.QWidget()
+        lp = QtWidgets.QVBoxLayout(log_panel)
+        lp.setContentsMargins(0, 0, 0, 0)
+        lp.addWidget(self.log_edit, 1)
+        lp.addWidget(QtWidgets.QLabel("此面板日志最多保留最近 4000 条，完整日志见工作目录下的 run.log"))
+
+        preview_panel = QtWidgets.QWidget()
+        pv = QtWidgets.QVBoxLayout(preview_panel)
+        pv.setContentsMargins(0, 0, 0, 0)
+        top_row = QtWidgets.QHBoxLayout()
+        self.preview_lbl = QtWidgets.QLabel("成品预览")
+        top_row.addWidget(self.preview_lbl)
+        top_row.addStretch(1)
+        self.prev_btn = QtWidgets.QPushButton("上一页")
+        self.next_btn = QtWidgets.QPushButton("下一页")
+        self.prev_btn.setEnabled(False)
+        self.next_btn.setEnabled(False)
+        self.prev_btn.clicked.connect(self._preview_prev)
+        self.next_btn.clicked.connect(self._preview_next)
+        top_row.addWidget(self.prev_btn)
+        top_row.addWidget(self.next_btn)
+        pv.addLayout(top_row)
         self.preview_list = QtWidgets.QListWidget()
         self.preview_list.setViewMode(QtWidgets.QListWidget.IconMode)
         self.preview_list.setIconSize(QtCore.QSize(160, 220))
         self.preview_list.setResizeMode(QtWidgets.QListWidget.Adjust)
+        self.preview_list.itemDoubleClicked.connect(self._on_preview_open)
+        pv.addWidget(self.preview_list, 1)
+
         sp = QtWidgets.QSplitter()
-        sp.addWidget(self.log_edit)
-        sp.addWidget(self.preview_list)
+        sp.addWidget(log_panel)
+        sp.addWidget(preview_panel)
         sp.setSizes([300, 600])
         lay.addRow(sp)
 
@@ -171,24 +230,54 @@ class TranslateView(QtWidgets.QWidget):
 
     def set_progress(self, fraction: float, desc: str = ""):
         self.progress_bar.setValue(int(max(0.0, min(1.0, fraction)) * 100))
+        # 之前 desc 参数被丢掉了：用户只知道"在跑"，不知道卡在哪个阶段哪一页。
+        # 这里同时显示"阶段 页码/总数 预计剩余 xx"，是"现在是什么状态"的关键反馈。
+        self.progress_lbl.setText(desc)
 
     def show_result(self, report: JobReport):
         self.load_preview(report.output_path)
 
     def load_preview(self, out):
+        self._preview_images = list_preview_images(out)
+        self._preview_offset = 0
+        self._show_preview_page()
+
+    def _show_preview_page(self):
         self.preview_list.clear()
-        if out is None:
+        total = len(self._preview_images)
+        if total == 0:
+            self.preview_lbl.setText("成品预览")
+            empty = QtWidgets.QListWidgetItem("（还没有成品，跑完一次任务后这里会显示预览）")
+            empty.setFlags(QtCore.Qt.NoItemFlags)
+            self.preview_list.addItem(empty)
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
             return
-        d = Path(out)
-        if d.is_file():
-            d = d.parent / d.stem
-        trans = d / "translated"
-        if not trans.exists():
-            return
-        imgs = sorted([p for p in trans.rglob("*") if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")])[:24]
-        for p in imgs:
+        page_size = _PREVIEW_PAGE_SIZE
+        page_no = self._preview_offset // page_size + 1
+        page_count = (total + page_size - 1) // page_size
+        self.preview_lbl.setText(f"成品预览（第 {page_no}/{page_count} 页，共 {total} 张，双击打开大图）")
+        for p in self._preview_images[self._preview_offset:self._preview_offset + page_size]:
             it = QtWidgets.QListWidgetItem(QtGui.QIcon(str(p)), p.name)
+            it.setData(QtCore.Qt.UserRole, str(p))
             self.preview_list.addItem(it)
+        self.prev_btn.setEnabled(self._preview_offset > 0)
+        self.next_btn.setEnabled(self._preview_offset + page_size < total)
+
+    def _preview_prev(self):
+        if self._preview_offset > 0:
+            self._preview_offset = max(0, self._preview_offset - _PREVIEW_PAGE_SIZE)
+            self._show_preview_page()
+
+    def _preview_next(self):
+        if self._preview_offset + _PREVIEW_PAGE_SIZE < len(self._preview_images):
+            self._preview_offset += _PREVIEW_PAGE_SIZE
+            self._show_preview_page()
+
+    def _on_preview_open(self, item):
+        path = item.data(QtCore.Qt.UserRole)
+        if path:
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
 
     def rerender_source_path(self) -> str:
         """重渲染的定位来源：优先输出路径，为空则用输入路径（同一次任务的产物）。"""

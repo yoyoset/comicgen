@@ -130,6 +130,11 @@ class ReviewView(QtWidgets.QWidget):
 
     def refresh_attention(self, attention: list[tuple[str, int, str]]):
         self.attention_list.clear()
+        if not attention:
+            empty = QtWidgets.QListWidgetItem("（没有需要注意的区域，译文质量不错）")
+            empty.setFlags(QtCore.Qt.NoItemFlags)
+            self.attention_list.addItem(empty)
+            return
         for image, region_index, reason in attention:
             item = QtWidgets.QListWidgetItem(f"{image}　{reason}")
             item.setData(QtCore.Qt.UserRole, (image, region_index))
