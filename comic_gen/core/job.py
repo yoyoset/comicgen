@@ -119,13 +119,19 @@ def build_job_snapshot(cfg, app_version: str, resolved_model_paths: dict, stages
 def format_failure_report(report: JobReport) -> str:
     """把 JobReport 的失败页列表格式化成可完整查看/导出的文本。纯函数，UI 弹窗与
     CLI 输出共用——之前 UI 只截断展示前 20 条失败且不可滚动不可导出，几百页的任务
-    失败信息等于没有。"""
+    失败信息等于没有。末尾带一句恢复提示：部分失败时重新运行即可从断点续跑。
+    """
     lines = [
         f"任务{report.status}：共 {report.total_pages} 页，{len(report.failed_pages)} 页失败。",
         "",
     ]
     for f in report.failed_pages:
         lines.append(f"[{f.stage}] {f.image}：{f.message}")
+    if report.failed_pages:
+        lines += [
+            "",
+            "提示：用相同的输入/输出路径重新运行即可从断点继续，已完成的页面不会重做。",
+        ]
     return "\n".join(lines)
 
 

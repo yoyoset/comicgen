@@ -119,9 +119,20 @@ def test_format_failure_report_lists_every_failure_with_stage():
     assert "[translate] p02.png：翻译失败: 模型未加载" in text
 
 
+def test_format_failure_report_ends_with_resume_hint_when_failures_exist():
+    """部分失败时报告末尾要带恢复提示——用户需要知道"下一步该做什么"（重新运行即
+    可从断点续跑，不重做已完成页）。"""
+    from comic_gen.core.job import format_failure_report
+
+    report = JobReport.from_pages([_failed_page("p01.png", "渲染失败: x", stage="render")], output_path=None)
+    text = format_failure_report(report)
+    assert "重新运行即可从断点继续" in text
+
+
 def test_format_failure_report_without_failures():
     from comic_gen.core.job import format_failure_report
 
     report = JobReport.from_pages([_rendered_page("a.png")], output_path=None)
     text = format_failure_report(report)
     assert "0 页失败" in text
+    assert "重新运行即可从断点继续" not in text  # 没有失败就不该出现恢复提示

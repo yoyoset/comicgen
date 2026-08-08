@@ -353,7 +353,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._last_completed_request = request_used
                     self._last_completed_output_path = result.output_path
                 self.translate_view.set_review_available(True)
-                QtWidgets.QMessageBox.information(self, "完成", result.summary)
+                path_hint = f"\n\n输出位置：{result.output_path}" if result.output_path else ""
+                QtWidgets.QMessageBox.information(self, "完成", result.summary + path_hint)
             elif result.status == "partial":
                 if request_used:
                     self._last_completed_request = request_used
