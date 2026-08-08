@@ -91,6 +91,8 @@ class MainWindow(QtWidgets.QMainWindow):
         act_diag.triggered.connect(lambda: self.centralWidget().setCurrentWidget(self.diagnostics_view))
 
         m_help = self.menuBar().addMenu("帮助(&H)")
+        act_help = m_help.addAction("使用说明")
+        act_help.triggered.connect(self._show_help)
         act_about = m_help.addAction("关于")
         act_about.triggered.connect(self._show_about)
 
@@ -164,6 +166,18 @@ class MainWindow(QtWidgets.QMainWindow):
             f"comic-gen 漫画自动翻译  v{__version__}\n\n"
             "检测 RT-DETRv2 · OCR manga-ocr/EasyOCR · 抹字 LaMa · 翻译 Sakura/通用本地 LLM\n"
             "全部本地推理，无需联网 API。",
+        )
+
+    def _show_help(self):
+        """首次用户的操作引导：说明"现在该做什么、为什么"。避免用户对着空白界面猜。"""
+        QtWidgets.QMessageBox.information(
+            self, "使用说明",
+            "1. 选输入：文件夹 / ZIP / CBZ / RAR / CBR / EPUB / PDF\n"
+            "2. 核对源语言与翻译引擎（默认已按语言自动推荐）\n"
+            "3. 点「开始翻译」——模型没就位会先提示去「模型管理」页补齐，不会白跑\n"
+            "4. 完成后在「成品预览」查看，或点「校对本次结果」改译文、改完点「导出全部」重新打包\n\n"
+            "每页结果实时落盘：任务中断/失败后，用相同输入输出重新运行即可从断点继续，"
+            "不会重跑已完成的页。",
         )
 
     # ------------------------------------------------------------ 设置
