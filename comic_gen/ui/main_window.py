@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -21,6 +22,10 @@ from .views.review_view import ReviewView
 from .views.settings_view import SettingsView
 from .views.translate_view import TranslateView
 from .workers import ModelWorker, ReviewRerenderWorker, ScanWorker
+
+# 关窗时给任务线程的宽限：翻译阶段单页可能跑几十秒（LLM 推理），协作式取消只在页边界
+# 生效，3 秒的固定等待不够；超过这个上限仍不退出才强制关闭（宁可放弃等，也不能挂死）。
+_SHUTDOWN_JOB_WAIT_S = 120
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -563,13 +568,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self.job_controller.shutdown()
         if self._m_cancel_event is not None:
             self._m_cancel_event.set()
+        self._wait_for_shutdown_threads()
+        self.settings.window_geometry_hex = bytes(self.saveGeometry().toHex()).decode()
+        self.settings.save()
+        super().closeEvent(event)
+
+    def _wait_for_shutdown_threads(self):
+        """等所有后台线程收尾再让窗口关闭。
+
+        之前只对每个线程 wait(3000) 然后继续关窗——翻译任务的一页可能跑几十秒
+        （LLM 推理），3 秒超时后直接退出会让 QThread 在 run() 还没返回时就被销毁
+        （"QThread: Destroyed while thread is still running"，任务看似"关掉了"
+        实际还在后台跑/可能崩）。改成：取消已请求，给任务线程一个宽松上限，期间
+        泵事件循环让 UI 保持响应，状态栏说明在等什么；上限到了才强制继续。
+        """
+        job_thread = self.job_controller._thread
+        if job_thread is not None and job_thread.isRunning():
+            self.status_lbl.setText("正在等待任务安全停止（当前页处理完即退出）…")
+            deadline = time.monotonic() + _SHUTDOWN_JOB_WAIT_S
+            while job_thread.isRunning() and time.monotonic() < deadline:
+                job_thread.wait(200)
+                QtWidgets.QApplication.processEvents()
+            if job_thread.isRunning():
+                self.log(f"[警告] 任务线程 {_SHUTDOWN_JOB_WAIT_S}s 内未停止，强制退出")
+
         # 模型/扫描线程同样要等收尾，不能只处理翻译任务的线程——直接退出会让还在跑的
         # QThread 对象在解释器关闭时失去引用，是 FirstRunDialog.closeEvent 已经用同样
-        # 方式防过的那类崩溃。
+        # 方式防过的那类崩溃。这三类线程都很快，3 秒足够。
         for thread in (self._m_thread, self._s_thread, self._rv_thread):
             if thread is not None and thread.isRunning():
                 thread.quit()
                 thread.wait(3000)
-        self.settings.window_geometry_hex = bytes(self.saveGeometry().toHex()).decode()
-        self.settings.save()
-        super().closeEvent(event)
