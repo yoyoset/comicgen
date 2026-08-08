@@ -45,12 +45,14 @@ class TranslateView(QtWidgets.QWidget):
     stopRequested = QtCore.Signal()
     rerenderRequested = QtCore.Signal()
     reviewRequested = QtCore.Signal()  # 打开最近一次完成任务的校对
+    openOutputRequested = QtCore.Signal()  # 在文件管理器中打开最近一次任务的输出
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._last_browse_dir = ""
         self._preview_images: list[Path] = []
         self._preview_offset = 0
+        self._last_output: str | None = None
         self._build()
 
     def _build(self):
@@ -132,6 +134,11 @@ class TranslateView(QtWidgets.QWidget):
         self.preview_lbl = QtWidgets.QLabel("成品预览")
         top_row.addWidget(self.preview_lbl)
         top_row.addStretch(1)
+        self.open_out_btn = QtWidgets.QPushButton("打开输出目录")
+        self.open_out_btn.setEnabled(False)
+        self.open_out_btn.setToolTip("在文件管理器中打开最近一次任务的输出位置")
+        self.open_out_btn.clicked.connect(self.openOutputRequested)
+        top_row.addWidget(self.open_out_btn)
         self.prev_btn = QtWidgets.QPushButton("上一页")
         self.next_btn = QtWidgets.QPushButton("下一页")
         self.prev_btn.setEnabled(False)
@@ -253,6 +260,7 @@ class TranslateView(QtWidgets.QWidget):
         self.load_preview(report.output_path)
 
     def load_preview(self, out):
+        self._last_output = out
         self._preview_images = list_preview_images(out)
         self._preview_offset = 0
         self._show_preview_page()
@@ -267,6 +275,7 @@ class TranslateView(QtWidgets.QWidget):
             self.preview_list.addItem(empty)
             self.prev_btn.setEnabled(False)
             self.next_btn.setEnabled(False)
+            self.open_out_btn.setEnabled(self._last_output is not None)
             return
         page_size = _PREVIEW_PAGE_SIZE
         page_no = self._preview_offset // page_size + 1
@@ -278,6 +287,7 @@ class TranslateView(QtWidgets.QWidget):
             self.preview_list.addItem(it)
         self.prev_btn.setEnabled(self._preview_offset > 0)
         self.next_btn.setEnabled(self._preview_offset + page_size < total)
+        self.open_out_btn.setEnabled(True)
 
     def _preview_prev(self):
         if self._preview_offset > 0:

@@ -108,6 +108,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.translate_view.stopRequested.connect(self.job_controller.cancel)
         self.translate_view.rerenderRequested.connect(self._on_rerender)
         self.translate_view.reviewRequested.connect(self._on_review_open_last)
+        self.translate_view.openOutputRequested.connect(self._on_open_output)
 
         self.settings_view.changed.connect(self._on_settings_changed)
 
@@ -156,9 +157,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.centralWidget().setCurrentWidget(self.translate_view)
 
     def _show_about(self):
+        from .. import __version__
+
         QtWidgets.QMessageBox.about(
             self, "关于 comic-gen",
-            "comic-gen 漫画自动翻译\n\n"
+            f"comic-gen 漫画自动翻译  v{__version__}\n\n"
             "检测 RT-DETRv2 · OCR manga-ocr/EasyOCR · 抹字 LaMa · 翻译 Sakura/通用本地 LLM\n"
             "全部本地推理，无需联网 API。",
         )
@@ -511,6 +514,17 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             report = result
         self.diagnostics_view.show_report(report)
+
+    def _on_open_output(self):
+        """「打开输出目录」：在文件管理器中打开最近一次任务的输出位置。
+        文件夹输入输出是目录、压缩包/PDF 输入输出是文件，统一打开其所在位置。"""
+        target = self._last_completed_output_path
+        if target is None:
+            return
+        if target.is_file():
+            target = target.parent
+        if target.exists():
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(target)))
 
     # ------------------------------------------------------------ 校对
     def _on_review_open(self):
