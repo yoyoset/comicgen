@@ -26,6 +26,10 @@ class LoadedInput:
 
 def load_input(input_path: str | Path, extract_dir: str | Path, cfg=None, load_cb=None) -> LoadedInput:
     p = Path(input_path)
+    # 最常见的用户错误：路径打错字/文件被移走。旧行为是 p.is_dir()==False 且无后缀时
+    # 报"不支持的输入类型: xxx"，把"路径不存在"伪装成"格式不支持"，误导排查方向。
+    if not p.exists():
+        raise InputError(f"输入路径不存在：{p}。请检查路径是否正确。")
     if p.is_dir():
         if load_cb:
             load_cb(1, 1)

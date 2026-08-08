@@ -19,6 +19,7 @@ def _fake_settings(monkeypatch, tmp_path):
 class _FakeSettings:
     model_dir = ""
     model_files = {}
+    device = "cuda"
 
 
 def test_precancelled_worker_skips_every_model_without_attempting_download(monkeypatch):
@@ -122,3 +123,27 @@ def test_unexpected_exception_reports_cleanly_without_crashing_on_missing_import
     assert "失败" in finished[0]
     assert "boom" in finished[0]
     assert "NameError" not in finished[0]
+
+
+def test_lama_build_uses_settings_device_not_hardcoded_cuda(monkeypatch):
+    """LaMa 的"检查/下载"闭包用 settings.device 构造 Inpainter——硬编码 "cuda" 会让
+    CPU 机器把"已下载成功"误报成失败（构造即加载，设备错会抛）。"""
+    import comic_gen.core.environment as env_mod
+    import comic_gen.pipeline.inpaint as inpaint_mod
+
+    monkeypatch.setattr(env_mod, "is_model_cached", lambda *a, **k: False)
+    calls = []
+    monkeypatch.setattr(inpaint_mod, "Inpainter", lambda *a, **k: calls.append(a) or None)
+
+    class _CpuSettings:
+        model_dir = ""
+        model_files = {}
+        device = "cpu"
+
+    finished = []
+    w = ModelWorker(_CpuSettings(), ["lama"], True, None)
+    w.finished.connect(finished.append)
+    w.run()
+
+    assert calls == [("cpu",)]  # 位置参数 device 来自设置，不再写死 "cuda"
+    assert "[OK]" in finished[0]

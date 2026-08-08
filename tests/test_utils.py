@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from comic_gen.core.utils import atomic_write_text, load_json, natural_key, save_json
+from comic_gen.core.utils import (
+    atomic_write_text,
+    available_space,
+    estimate_output_requirement,
+    load_json,
+    natural_key,
+    save_json,
+)
 
 
 def test_natural_key():
@@ -109,3 +116,25 @@ def test_save_json_uses_atomic_write(tmp_path):
     save_json(data, target)
     assert load_json(target) == data
     assert list(tmp_path.rglob("*.tmp")) == []
+
+
+def test_estimate_output_requirement_scales_with_input_size(tmp_path):
+    """磁盘需求按输入图片实际字节数×系数估算；越大越占，不存在的文件按 0 计。"""
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.png"
+    a.write_bytes(b"x" * 1000)
+    b.write_bytes(b"y" * 3000)
+    missing = tmp_path / "gone.png"
+
+    req = estimate_output_requirement([a, b, missing])
+    # 1000+3000=4000 字节，×2.5 = 10000；缺失文件不拖垮估算
+    assert req == 10000
+
+
+def test_estimate_output_requirement_empty_input_is_zero():
+    assert estimate_output_requirement([]) == 0
+
+
+def test_available_space_returns_positive_bytes(tmp_path):
+    free = available_space(tmp_path)
+    assert free > 0

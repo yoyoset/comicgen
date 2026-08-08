@@ -86,9 +86,11 @@ def test_pack_output_zip():
 def test_load_input_missing_zip_raises_input_error(tmp_path):
     """回归测试：实测复现过——缺失的 zip 之前是裸 FileNotFoundError 一路抛到 CLI
     最外层，打印一整段 Python 堆栈。改成 InputError，人话+原始异常都保留。
+    路径本身不存在时由存在性预检先拦下，报"输入路径不存在"——比"无法打开输入文件"
+    更准确地指出问题是路径打错/文件被移走，而不是文件损坏。
     """
     missing = tmp_path / "does_not_exist.zip"
-    with pytest.raises(InputError, match="无法打开输入文件"):
+    with pytest.raises(InputError, match="输入路径不存在"):
         load_input(missing, tmp_path / "_extract")
 
 
@@ -97,6 +99,14 @@ def test_load_input_corrupt_zip_raises_input_error(tmp_path):
     bad_zip.write_bytes(b"this is not a real zip file")
     with pytest.raises(InputError, match="无法打开输入文件"):
         load_input(bad_zip, tmp_path / "_extract")
+
+
+def test_load_input_nonexistent_path_is_not_unsupported_type(tmp_path):
+    """路径不存在（打错字）必须报"路径不存在"，不能伪装成"不支持的输入类型"——
+    后者的排查方向（改格式）对这个问题完全无效。无后缀路径最容易触发这个回归。"""
+    missing = tmp_path / "no_such_folder"
+    with pytest.raises(InputError, match="输入路径不存在"):
+        load_input(missing, tmp_path / "_extract")
 
 
 def test_pack_output_missing_images_and_no_original_are_skipped():

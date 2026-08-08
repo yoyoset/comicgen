@@ -102,6 +102,56 @@ def test_run_rejects_conflicting_output_before_any_extraction(tmp_path, monkeypa
         runner.run(str(input_dir), str(input_dir))  # 输出 == 输入
 
 
+def test_run_rejects_when_output_disk_space_insufficient(tmp_path, monkeypatch):
+    """磁盘预检：全新任务且空间明显不足时必须提前拒绝（OutputError），
+    而不是跑到一半把盘写满。用假的空间需求/剩余值隔离本机真实磁盘状态。"""
+    import comic_gen.pipeline.runner as runner_mod
+
+    _make_fake_pipeline(monkeypatch)
+    input_dir = _make_input_folder(tmp_path, n=2)
+    output_dir = tmp_path / "output"
+    monkeypatch.setattr(runner_mod, "estimate_output_requirement", lambda pages: 10 ** 18)
+    monkeypatch.setattr(runner_mod, "available_space", lambda path: 1)  # 只剩 1 字节
+
+    runner = Runner(Config(translator="mock", source_lang="ja"))
+    with pytest.raises(OutputError, match="磁盘空间"):
+        runner.run(str(input_dir), str(output_dir))
+    # 拒绝发生在写 pages.json 之前，不留下半截恢复点
+    assert not (output_dir / "pages.json").exists()
+
+
+def test_run_skips_disk_space_check_when_resuming(tmp_path, monkeypatch):
+    """续跑场景（工作目录已有 pages.json）即使空间估算虚高也不拦——估算是保守
+    上界，续跑大部分图已在盘上，误拦会让人无法恢复。"""
+    import comic_gen.pipeline.runner as runner_mod
+
+    _make_fake_pipeline(monkeypatch)
+    input_dir = _make_input_folder(tmp_path, n=2)
+    output_dir = tmp_path / "output"
+    output_dir.mkdir(parents=True)
+    (output_dir / "pages.json").write_text(
+        json.dumps({"input": str(input_dir.resolve()), "pages": []}), encoding="utf-8"
+    )
+    monkeypatch.setattr(runner_mod, "estimate_output_requirement", lambda pages: 10 ** 18)
+    monkeypatch.setattr(runner_mod, "available_space", lambda path: 1)
+
+    report = Runner(Config(translator="mock", source_lang="ja")).run(str(input_dir), str(output_dir))
+    assert report.status == "ok"
+
+
+def test_run_continues_when_disk_probe_fails(tmp_path, monkeypatch):
+    """磁盘探测本身失败（网络盘抖动等）只记日志放行——best-effort 预检不该拦住任务。"""
+    import comic_gen.pipeline.runner as runner_mod
+
+    _make_fake_pipeline(monkeypatch)
+    input_dir = _make_input_folder(tmp_path, n=2)
+    output_dir = tmp_path / "output"
+    monkeypatch.setattr(runner_mod, "available_space", lambda path: (_ for _ in ()).throw(OSError("denied")))
+
+    report = Runner(Config(translator="mock", source_lang="ja")).run(str(input_dir), str(output_dir))
+    assert report.status == "ok"
+
+
 def test_select_drawable_regions_keeps_only_translated():
     """有原文有译文 -> 抹字+重绘；有原文无译文 -> 原样保留，不进 drawable。"""
     regions = [

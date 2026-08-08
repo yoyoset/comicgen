@@ -27,7 +27,7 @@ from ..core.models import (
     STATUS_TRANSLATED,
     Page,
 )
-from ..core.utils import ensure_dir, load_json, save_json
+from ..core.utils import available_space, ensure_dir, estimate_output_requirement, load_json, save_json
 from ..infra.engine_cache import EngineCache
 from .loader import LoadedInput, default_output_path, load_input, pack_output
 
@@ -264,6 +264,9 @@ class Runner:
         trans_dir = ensure_dir(work_dir / "translated")
 
         pages = self._init_pages(loaded, work_dir, rerender)
+        # 磁盘预检必须赶在 _save_pages 之前——否则 pages.json 一写出来，"有没有缓存"
+        # 这个判定就永远是"有"，预检对全新任务就永远不执行了。
+        self._check_output_space(work_dir, loaded.pages)
         self._save_pages(work_dir, pages, input_path)
         self.log(f"共 {len(pages)} 页，工作目录: {work_dir}")
 
@@ -441,6 +444,32 @@ class Runner:
                 p.status = STATUS_TRANSLATED  # 强制回到渲染前
             pages.append(p)
         return pages
+
+    def _check_output_space(self, work_dir: Path, input_pages: list[Path]) -> None:
+        """开工前预估磁盘需求，明显不够时提前拒绝——不能跑到一半把盘写满，
+        让页面损坏/恢复点丢失。只对全新任务（无 pages.json 缓存）强制执行：
+        续跑时大部分图已在盘上，剩余增量很小，估算是保守上界，误拦会让人无法续跑。
+
+        磁盘探测/统计失败（网络盘抖动等）时只记日志放行，这是 best-effort 预检，
+        不该因为它自身失败就拦住一次本来能跑的任务。
+        """
+        pages_file = self._pages_file(work_dir)
+        if pages_file.exists():
+            return
+        try:
+            required = estimate_output_requirement(input_pages)
+            free = available_space(work_dir)
+            if required > free:
+                human_req = f"{required / (1024 ** 3):.1f} GB"
+                human_free = f"{free / (1024 ** 3):.1f} GB"
+                raise OutputError(
+                    f"输出位置磁盘空间可能不够：预计需要约 {human_req}，当前仅剩 {human_free}。"
+                    "请清理磁盘或把输出路径改到空间更大的位置后再试。"
+                )
+        except OutputError:
+            raise
+        except OSError as e:
+            self.log(f"[警告] 磁盘空间预检失败，跳过：{e}")
 
     def _progress(self, cb, stage: str, i: int, total: int):
         if cb:

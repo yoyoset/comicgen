@@ -170,6 +170,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if not request.input_path:
             QtWidgets.QMessageBox.warning(self, "提示", "请先选择输入")
             return
+        # 最常见的用户错误：路径打错字。在弹出"运行中"之前先拦下，比等 Runner
+        # 在工作线程里抛 InputError 再弹窗更即时（后者还多一次模型加载的等待）。
+        if not Path(request.input_path).exists():
+            QtWidgets.QMessageBox.warning(self, "输入路径无效", f"输入路径不存在：{request.input_path}")
+            return
         conflict = engine_lang_conflict(request.engine, request.source_lang)
         if conflict:
             QtWidgets.QMessageBox.warning(self, "引擎不匹配", conflict)

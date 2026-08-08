@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -62,3 +63,27 @@ def save_json(obj, path: Path):
 
 def load_json(path: Path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def estimate_output_requirement(pages: list) -> int:
+    """估算一次任务在 work_dir 里需要多少新磁盘空间（字节）。
+
+    按各输入图的磁盘大小求和后再乘系数：每种输入都要在 work_dir 里再产出一份
+    译文图（translated/），文件夹/压缩包还要再复制/打包成一份最终产物，PDF 的光栅化
+    图只会比原 PDF 更大。2.5 是偏保守的粗略系数，宁可高估让用户提前腾空间，也不要
+    跑到一半把盘写满。统计失败（单个文件被锁/权限拒绝）按 0 计，不把整个检查拖垮。
+    """
+    total = 0
+    for p in pages:
+        try:
+            total += Path(p).stat().st_size
+        except OSError:
+            continue
+    return int(total * 2.5)
+
+
+def available_space(path: Path) -> int:
+    """path 所在磁盘的可用空间（字节）；探测失败抛 OSError 由调用方兜底。"""
+    target = Path(path)
+    base = target if target.exists() else target.parent if target.parent.exists() else target.anchor
+    return shutil.disk_usage(base).free

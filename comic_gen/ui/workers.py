@@ -141,7 +141,10 @@ class ModelWorker(QtCore.QObject):
                     GeneralLLMTranslator(Config(translator="llm", source_lang="en", model_paths=bindings))
                 elif key == "lama":
                     from ..pipeline.inpaint import Inpainter
-                    Inpainter("cuda", model_path=bindings.get("lama"))
+                    # 用设置页的 device 而不是硬编码 "cuda"——CPU 机器上按 "cuda" 构造
+                    # 会报设备错误，把"已经下载成功"误报成下载失败（Inpainter 构造过程
+                    # 就是触发权重下载的入口）。
+                    Inpainter(self.settings.device, model_path=bindings.get("lama"))
 
             total = len(self.keys)
             for i, key in enumerate(self.keys, start=1):
