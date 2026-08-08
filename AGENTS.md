@@ -79,7 +79,8 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 ## 关键设计（改动前必读）
 
 1. **中间产物驱动**：每页所有阶段结果存 `<工作目录>/pages.json`，含 `input` 指纹（绝对路径），指纹不符则丢弃缓存。状态机：pending→detected→ocred→translated→rendered；`rerender=True` 会把 rendered 打回 translated 强制重渲染。**四个阶段全部逐页 try + 每页落盘**，单页失败不致整阶段丢失。另有 `<工作目录>/job.json`：本次任务的完整 `Config` 快照 + 各模型实际解析到的绝对路径 + 各阶段耗时，供事后诊断（`pages.json` 只记 `input` 一项，不够定位"当时用的是什么配置"）；`<工作目录>/run.log` 是叶子模块（`ocr.py`/`translate.py`/`render.py`）通过 `infra.logging` 记的带时间戳警告/提示。
-2. **工作目录规则**：文件夹输入 → 输出目录即工作目录；压缩包/PDF 输入 → `<输出文件名去扩展>/` 为工作目录，`_extract/src` 为解包区（**每次 run 先清空再解包**，防止不同输入污染）。`Runner._check_output_safe` 阻止输出覆盖原图（同路径或输出在输入目录内）。
+2. **工作目录规则**：文件夹输入 → 输出目录即工作目录；压缩包/PDF 输入 → `<输出文件名去扩展>/` 为工作目录，`_extract/src` 为解包区（**每次 run 先清空再解包**，防止不同输入污染）。`Runner._check_output_safe` 阻止输出覆盖原图（同路径或输出在输入目录内）。**旧目录污染有两道清理**：全新任务（无缓存命中）开工前清空 `translated/`（里面只可能留下一个不同输入/旧任务的图）；`pack_output` 打包文件夹输出时清掉输出目录里不属于当前页清单的图片文件（`loader._clean_stale_output_images`，跳过 `translated/`/`_extract/`）——否则换过输入后交付物会残留上一轮的旧页。
+   **四阶段编排统一走 `Runner._run_stage`**：检测/OCR/翻译/渲染的循环骨架（todo 过滤、取消检查、逐页 try + `error`/`error_stage` + 落盘 + 进度、阶段计时 + job.json 快照）完全相同，只有"每页做什么"不同——用 `per_page` 回调注入，不再四处各写一份几乎相同的 15 行循环。
 3. **支持格式**：文件夹（**递归**子目录）、ZIP/CBZ、RAR/CBR（解压需系统 UnRAR，输出转 CBZ）、EPUB（按 OPF spine 排序，重打包保 mimetype 规范）、PDF（PyMuPDF 每页 @150dpi 渲染为图，输出合并回 PDF；可通过 Config.pdf_dpi 调整）。
 4. **模型懒加载 + UI 常驻**：Runner._get_* 懒加载；`ui/job_controller.py` 的 `JobController` 持有一个长期存活的 Runner 实例，模型跨请求复用；翻译引擎按 `cfg.translator` name 切换重建，其余模型不重载。
 5. **全部本地翻译引擎**（`Config.translator`：`sakura`/`llm`/`mock`），不联网、不需要 API Key。Sakura 为日文专用（GGUF，轻小说风格），`source_lang != "ja"` 时 `pipeline.translate.engine_lang_conflict` 会拦截并提示改用 `llm`（通用多语言 GGUF）。
