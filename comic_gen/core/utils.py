@@ -61,6 +61,29 @@ def save_json(obj, path: Path):
     atomic_write_text(path, json.dumps(obj, ensure_ascii=False, indent=2))
 
 
+def atomic_save_image(image, path) -> None:
+    """把 PIL 图片原子写入 path（PNG）：同目录临时文件 + os.replace。
+
+    pages.json 会在图片写完之后才把状态改成 rendered，所以坏图本身会随重跑自愈；
+    但进程被恰好杀在写盘中途时，translated/ 下会留一张截断的 PNG——校对画布的
+    preview_path 优先取渲染图，这张坏图会让校对页显示一块破图，直到重跑覆盖它。
+    用原子替换让"要么没有、要么完整"，不留下可被读到的半张图。
+    """
+    path = Path(path)
+    ensure_dir(path.parent)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            image.save(f, format="PNG")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def load_json(path: Path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 

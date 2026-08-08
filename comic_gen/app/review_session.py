@@ -17,6 +17,7 @@ from ..core.config import Config
 from ..core.errors import InputError
 from ..core.job import load_pages, read_original_input, save_pages
 from ..core.models import STATUS_RENDERED, STATUS_TRANSLATED, Page
+from ..core.utils import atomic_save_image
 from ..infra.engine_cache import EngineCache
 
 # 检测置信度低于这个值时提示"需要注意"。纯展示阈值，不影响流水线的 suppress_overlaps
@@ -149,8 +150,8 @@ class ReviewSession:
         inpainter = self._get_inpainter()
         out_img = render_single_page(img, page, self.cfg, inpainter)
         out_path = self.work_dir / "translated" / page.image
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_img.save(out_path)
+        # 原子写图：和 Runner 批量渲染用同一份实现，进程被杀不留下截断 PNG
+        atomic_save_image(out_img, out_path)
         page.status = STATUS_RENDERED
         page.error = ""
         page.error_stage = ""

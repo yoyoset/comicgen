@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from comic_gen.core.utils import (
+    atomic_save_image,
     atomic_write_text,
     available_space,
     estimate_output_requirement,
@@ -138,3 +139,36 @@ def test_estimate_output_requirement_empty_input_is_zero():
 def test_available_space_returns_positive_bytes(tmp_path):
     free = available_space(tmp_path)
     assert free > 0
+
+
+def test_atomic_save_image_writes_complete_png(tmp_path):
+    """原子写图后产物是完整可读的 PNG，不留临时文件。"""
+    from PIL import Image
+
+    img = Image.new("RGB", (8, 8), (255, 0, 0))
+    target = tmp_path / "sub" / "page.png"
+    atomic_save_image(img, target)
+    with Image.open(target) as loaded:
+        loaded.load()
+        assert loaded.size == (8, 8)
+    assert list(tmp_path.rglob("*.tmp")) == []
+
+
+def test_atomic_save_image_failure_keeps_original_and_cleans_temp(monkeypatch, tmp_path):
+    """替换前失败（模拟 os.replace 抛错）时，原图保留、临时文件清理。"""
+    from PIL import Image
+
+    target = tmp_path / "page.png"
+    atomic_save_image(Image.new("RGB", (4, 4), "white"), target)
+    before = target.read_bytes()
+
+    def _boom(src, dst):
+        raise OSError("模拟写入失败")
+
+    monkeypatch.setattr("comic_gen.core.utils.os.replace", _boom)
+    with pytest.raises(OSError):
+        atomic_save_image(Image.new("RGB", (4, 4), "black"), target)
+    monkeypatch.undo()
+
+    assert target.read_bytes() == before
+    assert list(tmp_path.iterdir()) == [target]

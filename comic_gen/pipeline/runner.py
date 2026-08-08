@@ -27,7 +27,7 @@ from ..core.models import (
     STATUS_TRANSLATED,
     Page,
 )
-from ..core.utils import available_space, ensure_dir, estimate_output_requirement, load_json, save_json
+from ..core.utils import atomic_save_image, available_space, ensure_dir, estimate_output_requirement, load_json, save_json
 from ..infra.engine_cache import EngineCache
 from .loader import LoadedInput, default_output_path, load_input, pack_output
 
@@ -400,8 +400,8 @@ class Runner:
                 try:
                     out_img = render_single_page(open_page(p), p, self.cfg, inpainter, log=self.log)
                     out_path = trans_dir / p.image
-                    ensure_dir(out_path.parent)
-                    out_img.save(out_path)
+                    # 原子写图：进程被杀在写盘中途时不留下截断 PNG 被校对页读到
+                    atomic_save_image(out_img, out_path)
                     p.status = STATUS_RENDERED
                     p.error = ""
                     p.error_stage = ""

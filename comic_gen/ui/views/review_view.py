@@ -59,6 +59,9 @@ class ReviewView(QtWidgets.QWidget):
         self.open_btn = QtWidgets.QPushButton("打开工作目录…")
         self.open_btn.clicked.connect(self.openRequested)
         top.addWidget(self.open_btn)
+        self.busy_lbl = QtWidgets.QLabel("")
+        self.busy_lbl.setStyleSheet("color: #b8860b;")
+        top.addWidget(self.busy_lbl)
         self.dir_lbl = QtWidgets.QLabel("未打开任何工作目录")
         self.dir_lbl.setStyleSheet("color: gray;")
         top.addWidget(self.dir_lbl, 1)
@@ -178,6 +181,8 @@ class ReviewView(QtWidgets.QWidget):
     def set_busy(self, busy: bool):
         self.open_btn.setEnabled(not busy)
         self.rerender_btn.setEnabled(not busy and self._current_image is not None)
+        # 重渲染是 GPU 推理，可能数秒——给个可见的状态，而不是按钮一灰就毫无反馈
+        self.busy_lbl.setText("重渲染本页中…" if busy else "")
 
     # ------------------------------------------------------------ 内部事件 -> 对外信号
     def _on_page_row_changed(self, image: str):

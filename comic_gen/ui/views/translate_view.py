@@ -44,6 +44,7 @@ class TranslateView(QtWidgets.QWidget):
     startRequested = QtCore.Signal()
     stopRequested = QtCore.Signal()
     rerenderRequested = QtCore.Signal()
+    reviewRequested = QtCore.Signal()  # 打开最近一次完成任务的校对
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -91,10 +92,15 @@ class TranslateView(QtWidgets.QWidget):
         self.rerender_btn = QtWidgets.QPushButton("重渲染")
         self.rerender_btn.setToolTip("编辑 pages.json 后重新渲染译文（需选择上次翻译的输出目录）")
         self.rerender_btn.clicked.connect(self.rerenderRequested)
+        self.review_btn = QtWidgets.QPushButton("校对本次结果…")
+        self.review_btn.setToolTip("打开最近一次完成任务的工作目录进行校对（无需重新定位）")
+        self.review_btn.setEnabled(False)
+        self.review_btn.clicked.connect(self.reviewRequested)
         br = QtWidgets.QHBoxLayout()
         br.addWidget(self.start_btn, 2)
         br.addWidget(self.stop_btn, 1)
         br.addWidget(self.rerender_btn, 1)
+        br.addWidget(self.review_btn, 1)
         lay.addRow(br)
 
         self.progress_bar = QtWidgets.QProgressBar()
@@ -221,6 +227,10 @@ class TranslateView(QtWidgets.QWidget):
         self.start_btn.setEnabled(not running)
         self.rerender_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
+
+    def set_review_available(self, available: bool):
+        """任务成功/部分完成后点亮"校对本次结果"，开始新任务时由 MainWindow 关掉。"""
+        self.review_btn.setEnabled(available)
 
     def append_log(self, msg: str):
         self.log_edit.appendPlainText(msg)

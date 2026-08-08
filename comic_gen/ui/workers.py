@@ -216,3 +216,31 @@ class ScanWorker(QtCore.QObject):
             if len(dups := find_duplicates(key, model_dir=self.settings.model_dir)) > 1
         }
         self.finished.emit(status, dupes)
+
+
+class DiagnosticsWorker(QtCore.QObject):
+    """在后台线程跑环境自检（CUDA/llama/UnRAR/磁盘/全部模型状态）。
+
+    detect_environment(check_models=True) 对每个模型走 resolve_status 的本地搜索，
+    在共享大模型目录（几十万文件）上实测要几秒——之前 _run_diagnostics 在 UI 线程
+    同步调用，每次启动和每次扫描完成后界面都会卡死几秒。这里挪到线程里，结果就绪
+    再切回 UI 线程。
+    """
+
+    finished = QtCore.Signal(object)  # EnvReport 或 Exception
+
+    def __init__(self, model_dir: str, bindings: dict):
+        super().__init__()
+        self.model_dir = model_dir
+        self.bindings = bindings
+
+    @QtCore.Slot()
+    def run(self):
+        from ..core.environment import detect_environment
+
+        try:
+            report = detect_environment(model_dir=self.model_dir, bindings=self.bindings)
+        except Exception as e:  # noqa: BLE001 —— 自检自身失败也要反馈，不能把异常吞进线程
+            self.finished.emit(e)
+            return
+        self.finished.emit(report)

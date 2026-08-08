@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..app.review_session import ReviewSession, load_config_for_review
-from ..core.environment import apply_model_dir, detect_environment
+from ..core.environment import apply_model_dir
 from ..core.errors import ComicGenError, format_job_failure
 from ..core.job import JobReport, JobRequest, format_failure_report, read_original_input, resolve_pages_json
 from ..core.manifest import MODEL_MANIFEST
@@ -21,7 +21,7 @@ from .views.model_view import ModelView
 from .views.review_view import ReviewView
 from .views.settings_view import SettingsView
 from .views.translate_view import TranslateView
-from .workers import ModelWorker, ReviewRerenderWorker, ScanWorker
+from .workers import DiagnosticsWorker, ModelWorker, ReviewRerenderWorker, ScanWorker
 
 # 关窗时给任务线程的宽限：翻译阶段单页可能跑几十秒（LLM 推理），协作式取消只在页边界
 # 生效，3 秒的固定等待不够；超过这个上限仍不退出才强制关闭（宁可放弃等，也不能挂死）。
@@ -43,6 +43,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._m_cancel_event: threading.Event | None = None
         self._s_thread: QtCore.QThread | None = None
         self._s_worker: ScanWorker | None = None
+        self._d_thread: QtCore.QThread | None = None
+        self._d_worker: DiagnosticsWorker | None = None
         self._rv_thread: QtCore.QThread | None = None
         self._rv_worker: ReviewRerenderWorker | None = None
         self._review_session: ReviewSession | None = None
@@ -105,6 +107,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.translate_view.startRequested.connect(self._on_start)
         self.translate_view.stopRequested.connect(self.job_controller.cancel)
         self.translate_view.rerenderRequested.connect(self._on_rerender)
+        self.translate_view.reviewRequested.connect(self._on_review_open_last)
 
         self.settings_view.changed.connect(self._on_settings_changed)
 
@@ -202,6 +205,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.translate_view.clear_log()
         self.status_progress.setVisible(True)
         self.status_progress.setValue(0)
+        self.translate_view.set_review_available(False)  # 新任务开始，上一轮的校对入口失效
         try:
             self._pending_request = request
             self.job_controller.start(request, cfg)
@@ -330,11 +334,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 if request_used:
                     self._last_completed_request = request_used
                     self._last_completed_output_path = result.output_path
+                self.translate_view.set_review_available(True)
                 QtWidgets.QMessageBox.information(self, "完成", result.summary)
             elif result.status == "partial":
                 if request_used:
                     self._last_completed_request = request_used
                     self._last_completed_output_path = result.output_path
+                # 部分失败也有产物可校对，仍点亮「校对本次结果」
+                self.translate_view.set_review_available(True)
                 self._show_failure_report(result, "部分完成")
             elif result.status == "cancelled":
                 # 之前只设了状态栏文字，JobReport.cancelled 里写好的"已完成 X/Y 页，
@@ -480,7 +487,28 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ------------------------------------------------------------ 环境自检
     def _run_diagnostics(self):
-        report = detect_environment(model_dir=self.settings.model_dir, bindings=self.settings.model_files)
+        # 环境自检含全部 6 个模型的本地搜索，在共享大模型目录上实测要几秒——不能放
+        # UI 线程同步跑（启动/每次扫描完成都会卡界面）。挪到后台线程，和模型扫描
+        # 同一个线程模式；重入保护同其它 worker（换线程前不等旧线程收尾的守卫）。
+        if self.job_controller.is_busy():
+            return
+        if self._d_thread is not None and self._d_thread.isRunning():
+            return
+        self._d_thread = QtCore.QThread()
+        self._d_worker = DiagnosticsWorker(self.settings.model_dir, self.settings.model_files)
+        self._d_worker.moveToThread(self._d_thread)
+        self._d_thread.started.connect(self._d_worker.run)
+        self._d_worker.finished.connect(self._on_diagnostics_done)
+        self._d_worker.finished.connect(self._d_thread.quit)
+        self._d_thread.start()
+
+    def _on_diagnostics_done(self, result):
+        from ..core.environment import EnvReport
+
+        if isinstance(result, Exception):
+            report = EnvReport(warnings=[f"环境自检失败：{result}"])
+        else:
+            report = result
         self.diagnostics_view.show_report(report)
 
     # ------------------------------------------------------------ 校对
@@ -493,7 +521,19 @@ class MainWindow(QtWidgets.QMainWindow):
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择翻译工作目录（包含 pages.json）", start_dir)
         if not d:
             return
+        self._open_review_dir(d)
 
+    def _on_review_open_last(self):
+        """「校对本次结果」：直接打开最近一次完成任务的工作目录，不用再浏览定位。
+        这是"结果查看 → 校对"闭环的最后一跳，之前只能靠手动浏览去找输出目录。"""
+        if self.job_controller.is_busy():
+            QtWidgets.QMessageBox.information(self, "提示", "有任务正在运行，请先等待完成。")
+            return
+        if self._last_completed_output_path is None:
+            return
+        self._open_review_dir(str(self._last_completed_output_path))
+
+    def _open_review_dir(self, d: str):
         apply_model_dir(self.settings.model_dir)
         # 校对/单页重渲染要用产生这批结果时的原始配置（模型路径、设备、字体……），
         # 不是设置页里现在恰好显示的值——job.json 有就优先用它，没有才退回当前设置。
@@ -507,6 +547,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.review_view.set_work_dir_label(d)
         self.review_view.load_pages(self._review_session.page_images(), self._review_attention_tuples())
+        self.centralWidget().setCurrentWidget(self.review_view)
 
     def _review_attention_tuples(self) -> list[tuple[str, int, str]]:
         return [(a.page_image, a.region_index, a.reason) for a in self._review_session.attention_items()]
@@ -592,10 +633,10 @@ class MainWindow(QtWidgets.QMainWindow):
             if job_thread.isRunning():
                 self.log(f"[警告] 任务线程 {_SHUTDOWN_JOB_WAIT_S}s 内未停止，强制退出")
 
-        # 模型/扫描线程同样要等收尾，不能只处理翻译任务的线程——直接退出会让还在跑的
+        # 模型/扫描/自检线程同样要等收尾，不能只处理翻译任务的线程——直接退出会让还在跑的
         # QThread 对象在解释器关闭时失去引用，是 FirstRunDialog.closeEvent 已经用同样
-        # 方式防过的那类崩溃。这三类线程都很快，3 秒足够。
-        for thread in (self._m_thread, self._s_thread, self._rv_thread):
+        # 方式防过的那类崩溃。这几类线程都很快，3 秒足够。
+        for thread in (self._m_thread, self._s_thread, self._rv_thread, self._d_thread):
             if thread is not None and thread.isRunning():
                 thread.quit()
                 thread.wait(3000)
