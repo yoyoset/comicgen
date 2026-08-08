@@ -1,4 +1,4 @@
-"""只读诊断：对单张图片跑检测(+OCR)，输出重复框/低置信度等排版错乱线索。
+r"""只读诊断：对单张图片跑检测(+OCR)，输出重复框/低置信度等排版错乱线索。
 
 不写任何产物、不修改任何文件。用于在改动 detect.py 的去重逻辑前，
 先在真实（尤其是宣传/情报类）漫画页上量化"同一块文字被检测器输出了几次"这类问题。
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import json
 import sys
 from pathlib import Path
 
@@ -19,6 +20,29 @@ from PIL import Image
 
 from comic_gen.core.config import Config
 from comic_gen.pipeline.detect import LABEL_BUBBLE, ComicDetector
+from scripts.region_quality import format_batch_report
+
+
+def batch_report_main(pages_path: Path) -> None:
+    """Read pages.json and optional sibling job.json without writing either file."""
+    data = json.loads(pages_path.read_text(encoding="utf-8"))
+    pages = data.get("pages", data) if isinstance(data, dict) else data
+    stage_seconds = {}
+    stage_ranges = []
+    job_path = pages_path.with_name("job.json")
+    if job_path.exists():
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+        for name, stage in job.get("stages", {}).items():
+            if isinstance(stage, dict) and isinstance(stage.get("duration_s"), (int, float)):
+                page_count = stage.get("page_count")
+                label = f"{name}({page_count}页)" if page_count else name
+                stage_seconds[label] = float(stage["duration_s"])
+                stage_ranges.append(f"{name}={stage['duration_s']}s/{page_count or '?'}页")
+    missing = [name for name in ("detect", "ocr") if name not in stage_seconds]
+    if missing:
+        stage_ranges.append(f"缺失: {', '.join(missing)}")
+    note = "；".join(stage_ranges)
+    print(format_batch_report(pages, stage_seconds=stage_seconds, stage_note=note))
 
 
 def iou(a: list[int], b: list[int]) -> float:
@@ -43,13 +67,20 @@ def containment(a: list[int], b: list[int]) -> float:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("image", help="待诊断的图片路径")
+    ap.add_argument("image", nargs="?", help="待诊断的图片路径")
+    ap.add_argument("--pages-json", type=Path, help="对 pages.json 做只读批量质量统计")
     ap.add_argument("--lang", default="ja", choices=["ja", "en", "zh", "other"])
     ap.add_argument("--threshold", type=float, default=0.3)
     ap.add_argument("--iou-thr", type=float, default=0.5, help="判定为重叠对的 IoU 阈值")
     ap.add_argument("--contain-thr", type=float, default=0.9, help="判定为包含对的比例阈值")
     ap.add_argument("--ocr", action="store_true", help="附带跑 OCR（较慢，默认关闭）")
     args = ap.parse_args()
+
+    if args.pages_json:
+        batch_report_main(args.pages_json)
+        return
+    if not args.image:
+        ap.error("需要图片路径，或使用 --pages-json")
 
     img_path = Path(args.image)
     if not img_path.exists():
