@@ -183,6 +183,67 @@ def test_select_drawable_regions_whitespace_only_treated_as_empty():
     assert select_drawable_regions(regions) == []
 
 
+def test_rerun_completed_job_skips_all_stages(tmp_path, monkeypatch):
+    """已全部渲染完成的任务重跑，四阶段 todo 都为空——阶段实现一行都不该执行
+    （只重新打包）。这守住 `_run_stage` 的 `if not todo` 短路 + 调用方 `if todo:`
+    守卫：否则重跑会重新跑一遍检测/OCR/翻译/渲染，等于丢掉了断点续跑的语义。"""
+    import comic_gen.pipeline.detect as detect_mod
+    import comic_gen.pipeline.inpaint as inpaint_mod
+    import comic_gen.pipeline.ocr as ocr_mod
+    import comic_gen.pipeline.render as render_mod
+
+    calls = {"detect": 0, "ocr": 0, "inpaint": 0, "render": 0}
+
+    class FakeDetector:
+        def __init__(self, *a, **k):
+            pass
+
+        def detect(self, image):
+            calls["detect"] += 1
+            return [Region(bbox=[0, 0, 10, 10], direction="horizontal")]
+
+    class FakeOcr:
+        def __init__(self, *a, **k):
+            pass
+
+        def recognize_regions(self, image, regions):
+            calls["ocr"] += 1
+            for r in regions:
+                r.source_text = "テスト"
+
+    class FakeInpainter:
+        def __init__(self, *a, **k):
+            pass
+
+        def inpaint_page(self, image, regions):
+            calls["inpaint"] += 1
+            return image.copy()
+
+    def fake_render_page(image, regions, cfg):
+        calls["render"] += 1
+        return image.copy()
+
+    monkeypatch.setattr(detect_mod, "ComicDetector", FakeDetector)
+    monkeypatch.setattr(ocr_mod, "OcrEngine", FakeOcr)
+    monkeypatch.setattr(inpaint_mod, "Inpainter", FakeInpainter)
+    monkeypatch.setattr(render_mod, "render_page", fake_render_page)
+
+    input_dir = _make_input_folder(tmp_path, n=2)
+    output_dir = tmp_path / "output"
+    cfg = Config(translator="mock", source_lang="ja")
+    runner = Runner(cfg)
+
+    first = runner.run(str(input_dir), str(output_dir))
+    assert first.status == "ok"
+    assert all(v == 2 for v in calls.values()), calls  # 第一次跑：每阶段处理 2 页
+
+    calls.clear()
+    second = runner.run(str(input_dir), str(output_dir))
+    assert second.status == "ok"
+    assert all(v == 0 for v in calls.values()), calls  # 全部已 RENDERED，阶段不再执行
+    assert (output_dir / "page_0.png").exists()  # 重新打包照常产出
+
+
 # ---------------------------------------------------------------- 引擎缓存失效
 
 

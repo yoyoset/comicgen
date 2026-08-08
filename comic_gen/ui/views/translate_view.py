@@ -120,6 +120,8 @@ class TranslateView(QtWidgets.QWidget):
         log_panel = QtWidgets.QWidget()
         lp = QtWidgets.QVBoxLayout(log_panel)
         lp.setContentsMargins(0, 0, 0, 0)
+        log_title = QtWidgets.QLabel("运行日志")
+        lp.addWidget(log_title)
         lp.addWidget(self.log_edit, 1)
         lp.addWidget(QtWidgets.QLabel("此面板日志最多保留最近 4000 条，完整日志见工作目录下的 run.log"))
 

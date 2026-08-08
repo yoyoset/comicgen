@@ -269,7 +269,7 @@ class Runner:
         # 预览读到错图。续跑/重渲染（有已处理页）时保留——部分页的重渲染图不能丢。
         if not any(p.status != STATUS_PENDING for p in pages):
             stale_trans = work_dir / "translated"
-            if stale_trans.exists():
+            if stale_trans.is_dir():
                 shutil.rmtree(stale_trans)
             trans_dir = ensure_dir(work_dir / "translated")
         # 磁盘预检必须赶在 _save_pages 之前——否则 pages.json 一写出来，"有没有缓存"
