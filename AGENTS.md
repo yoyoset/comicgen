@@ -126,7 +126,9 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
     `core.utils.atomic_write_text`（同目录临时文件 + `os.replace`，Windows/NTFS 上是原子的）。
     进程在写盘中途被杀，最坏情况是丢失"当前这一页"的进度，绝不会留下截断的 JSON 被
     `_load_pages` 当成"没有缓存"整体丢弃（那等于丢掉整个任务的断点）。改这些文件时不要
-    退回 `path.write_text` 直写。
+    退回 `path.write_text` 直写。**渲染/重渲染的成品图也走 `core.utils.atomic_save_image`
+    （PNG）**——pages.json 在图片写完后才置 rendered，坏图会随重跑自愈，但校对画布的
+    preview_path 优先取渲染图，不原子写会留下一张可被读到的截断 PNG。
 19. **磁盘空间预检**（`Runner._check_output_space`，纯 Qt-free）：全新任务（工作目录无
     `pages.json`）开工前按输入图字节数×2.5 估算需求，剩余空间不够直接 `OutputError`
     提前拒绝，不跑到一半把盘写满。续跑不拦（大部分图已在盘上，估算是保守上界，误拦会
@@ -145,6 +147,12 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
     `_SHUTDOWN_JOB_WAIT_S=120` 秒宽限（翻译单页可能几十秒），期间泵事件循环、状态栏说明
     在等什么——不再 3 秒固定超时后销毁仍在 run() 的 QThread。`ui.app._install_excepthook`
     兜底所有未预期异常：完整堆栈落 `comicgen.log` + 人话弹窗，防止"程序无声闪退"。
+24. **环境自检在后台线程**（`ui.workers.DiagnosticsWorker`）：`detect_environment` 对全部
+    6 个模型走本地搜索，在共享大模型目录上实测要几秒（本机 3.8s）——`MainWindow._run_diagnostics`
+    之前同步跑在 UI 线程，启动和每次扫描完成后界面都会冻结几秒。改线程后 `finished` 信号
+    是排到主线程的队列连接，验证时 wait() 期间必须 `processEvents()` 才会被送达（和关窗
+    收尾同一个模式）。**「校对本次结果」**按钮（翻译页）直达最近一次完成任务的工作目录并
+    自动切到校对页签，是"结果查看 → 校对"闭环的最后一跳，不必再手动浏览定位。
 
 ## 已知待办 / 局限
 
