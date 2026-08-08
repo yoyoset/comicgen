@@ -176,13 +176,15 @@ class SettingsView(QtWidgets.QWidget):
             self._emit_changed()
 
     def _reset_defaults(self):
-        # 危险操作确认：恢复默认会清空模型目录/每个模型的路径绑定/阈值/设备/渲染参数，
-        # 模型绑定是用户花精力逐项定位出来的（可能指向几十 GB 的共享缓存），恢复后要
-        # 重新去「模型管理」页定位。模型文件本身不删，但绑定设置会丢，必须让用户确认。
+        # 危险操作确认：恢复默认会把模型目录/推理设备/检测阈值/渲染参数（字号、字体、
+        # PDF DPI）全部还原，是用户花精力配置过的值，必须让用户确认。注意：这个页签
+        # 只管上面这几项，**不会**清空「模型管理」页里逐项定位的模型路径绑定
+        # （apply_to 不写 model_files）——对话框文案必须如实说明这一点，不能吓唬用户说
+        # 绑定会被清空。
         if QtWidgets.QMessageBox.question(
             self, "恢复默认",
-            "将把模型目录、模型路径绑定、推理设备、检测阈值、渲染参数等全部恢复为默认值。\n"
-            "已定位的模型绑定会被清空（模型文件本身不会删除），需要重新到「模型管理」页定位。\n\n继续？",
+            "将把模型目录、推理设备、检测阈值、字号、字体、PDF DPI 等恢复为默认值。\n"
+            "「模型管理」页里已定位的模型路径绑定不受影响（如需清除请到该页单独操作）。\n\n继续？",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,
         ) != QtWidgets.QMessageBox.Yes:
