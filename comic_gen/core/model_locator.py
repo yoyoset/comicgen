@@ -53,6 +53,21 @@ def gguf_search_roots(model_dir: str | None = None) -> list[Path]:
     return roots
 
 
+def _walk_gguf_files(target: str, model_dir: str | None = None) -> list[Path]:
+    """在全部搜索根里递归找文件名与 target 完全一致的权重文件（.incomplete 等下载残留
+    不会命中，因为按完整文件名匹配）。find_local_gguf 与 find_duplicates 共用——
+    "怎么在共享大目录里找一份权重"的遍历逻辑只存在一份，两个调用方不用各写一遍。
+    """
+    hits: list[Path] = []
+    for root in gguf_search_roots(model_dir):
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d.lower() not in _SKIP_DIRS]
+            for fn in filenames:
+                if fn.lower() == target:
+                    hits.append(Path(dirpath) / fn)
+    return hits
+
+
 def find_local_gguf(filename: str, model_dir: str | None = None) -> Path | None:
     """在本地各缓存根里按文件名找 .gguf，全程不联网。找不到返回 None（不抛错）。"""
     if not filename:
@@ -69,19 +84,9 @@ def find_local_gguf(filename: str, model_dir: str | None = None) -> Path | None:
             return p
         del _cache[key]
 
-    hits: list[Path] = []
-    for root in roots:
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d.lower() not in _SKIP_DIRS]
-            for fn in filenames:
-                # 只认完整同名文件：.incomplete 之类的下载残留不会命中
-                if fn.lower() == target:
-                    hits.append(Path(dirpath) / fn)
-
-    result: Path | None = None
-    if hits:
-        # 同名多份（典型：hub 布局一份 + 平铺一份）取最新，避免拿到早期损坏/半旧的那份
-        result = max(hits, key=lambda p: p.stat().st_mtime)
+    hits = _walk_gguf_files(target, model_dir)
+    # 同名多份（典型：hub 布局一份 + 平铺一份）取最新，避免拿到早期损坏/半旧的那份
+    result = max(hits, key=lambda p: p.stat().st_mtime) if hits else None
     _cache[key] = result
     return result
 
@@ -298,14 +303,7 @@ def find_duplicates(key: str, *, model_dir: str | None = None) -> list[Path]:
     spec = MODEL_MANIFEST[key]
     if spec.layout != LAYOUT_FILE or not spec.filename:
         return []
-    target = spec.filename.lower()
-    hits: list[Path] = []
-    for root in gguf_search_roots(model_dir):
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d.lower() not in _SKIP_DIRS]
-            for fn in filenames:
-                if fn.lower() == target:
-                    hits.append(Path(dirpath) / fn)
+    hits = _walk_gguf_files(spec.filename.lower(), model_dir)
     # 搜索根本身会重叠（HF_HOME 与 HF_HOME/hub 都在根列表里，前者的递归遍历已经
     # 覆盖后者），同一个物理文件可能从两个根各命中一次——按解析后的绝对路径去重，
     # 否则会把"只有一份"误报成"有重复"。
