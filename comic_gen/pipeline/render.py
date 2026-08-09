@@ -141,6 +141,12 @@ def balance_lines(text: str, measure, max_w: float) -> list[str]:
     只要仍能排成同样的行数，前面的行就会主动少装一点，把孤字分摊回去。
 
     二分查找仍能保持行数不变的最小宽度。行数随宽度减小单调不减，可以二分。
+
+    迭代 10 次：每次把宽度区间对半，10 次后区间宽 ≈ max_w/1024（170px 框约 0.17px，
+    亚像素）。旧实现 16 次收敛到 0.003px，纯属白算——每次迭代都是一次完整的逐字符
+    宽度测量（实测 render_page 的 CPU 时间 66% 花在 font.getlength 上），多出的 6 次
+    在密集页上每区域多花 ~3ms（40 区域页约 90ms）。行平衡精度到亚像素即可，多出来的
+    十进制位数不会显示出来。
     """
     baseline = wrap_by_width(text, measure, max_w)
     n = len(baseline)
@@ -148,7 +154,7 @@ def balance_lines(text: str, measure, max_w: float) -> list[str]:
         return baseline
     lo, hi = 1.0, float(max_w)
     best = baseline
-    for _ in range(16):
+    for _ in range(10):
         mid = (lo + hi) / 2
         candidate = wrap_by_width(text, measure, mid)
         if len(candidate) == n:
