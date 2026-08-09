@@ -18,7 +18,7 @@ from PIL import Image
 from .. import __version__
 from ..core.config import Config
 from ..core.errors import OutputError, Stage
-from ..core.job import JobReport, build_job_snapshot
+from ..core.job import JobReport, build_job_snapshot, save_pages
 from ..core.models import (
     STATUS_DETECTED,
     STATUS_OCRED,
@@ -169,10 +169,14 @@ class Runner:
         return work_dir / "pages.json"
 
     def _save_pages(self, work_dir: Path, pages: list[Page], input_path: Path | None = None):
-        data: dict[str, object] = {"pages": [p.to_dict() for p in pages]}
-        if input_path is not None:
-            data["input"] = str(input_path.resolve())
-        save_json(data, self._pages_file(work_dir))
+        # 与 core.job.save_pages 共用同一份 pages.json 格式实现——校对会话写出的
+        # pages.json 和 Runner 写出的必须同构（两边互相读写同一份文件），格式逻辑
+        # 只存在一处，改字段不会只有一边生效。
+        save_pages(
+            self._pages_file(work_dir),
+            pages,
+            str(input_path.resolve()) if input_path is not None else None,
+        )
 
     def _load_pages(self, work_dir: Path, input_path: Path) -> dict[str, Page]:
         """读取缓存；缓存与当前输入不一致时丢弃（避免不同输入污染同一工作目录）。"""
