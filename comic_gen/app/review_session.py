@@ -19,6 +19,7 @@ from ..core.job import load_pages, read_original_input, save_pages
 from ..core.models import STATUS_RENDERED, STATUS_TRANSLATED, Page
 from ..core.utils import atomic_save_image
 from ..infra.engine_cache import EngineCache
+from ..infra.logging import logger
 
 # 检测置信度低于这个值时提示"需要注意"。纯展示阈值，不影响流水线的 suppress_overlaps
 # 判定——和 diagnose_page.py 里给用户看的诊断阈值同一个数量级，没有实测校准过。
@@ -37,7 +38,11 @@ def load_config_for_review(work_dir: str | Path, fallback: Config) -> Config:
     try:
         data = json.loads(job_json.read_text(encoding="utf-8"))
         return Config(**data["config"])
-    except Exception:
+    except Exception as e:
+        # job.json 缺失/损坏时回退当前设置页的值，但不能静默——两者可能给出矛盾的
+        # 配置（比如旧工作目录里跑出来的结果配的是另一套模型路径），留一条日志方便
+        # 事后判断"这份校对用的是哪份配置"。
+        logger.warning("job.json 读取失败，校对使用当前设置页配置作为兜底：%s", e)
         return fallback
 
 

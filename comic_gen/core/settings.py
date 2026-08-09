@@ -11,6 +11,7 @@ import shutil
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from ..infra.logging import logger
 from .config import Config
 from .job import JobRequest
 from .paths import legacy_settings_path, settings_path
@@ -87,7 +88,12 @@ class AppSettings:
 
         try:
             text = path.read_text(encoding="utf-8")
-        except Exception:
+        except Exception as e:
+            # 读文件本身失败（被锁/权限/磁盘抖动）而不只是内容损坏：不能静默当
+            # "没有设置"回退默认——那会把用户绑定的模型路径悄悄丢掉，下次任务
+            # 会重新搜索/联网下载。仍回退默认值（没有别的选择），但把原因记进日志，
+            # 避免用户以为是全新配置。
+            logger.warning("读取设置文件失败，已用默认设置：%s", e)
             return cls()
 
         result, warnings = cls.parse_or_recover(text)

@@ -12,6 +12,7 @@ from xml.etree import ElementTree as ET
 from ..core.environment import find_unrar
 from ..core.errors import InputError
 from ..core.utils import ensure_dir, is_image, list_images, natural_key
+from ..infra.logging import logger
 
 
 @dataclass
@@ -184,7 +185,11 @@ def _epub_image_order(src: Path) -> list[str]:
                 except ValueError:
                     continue
         return result
-    except Exception:
+    except Exception as e:
+        # OPF 解析失败（结构异常/编码问题）不能静默回退自然排序——那会把一页的顺序
+        # 悄悄弄错。回退是"不打断这本书"，但要在日志里留下原因，方便事后知道这次
+        # 用的不是 EPUB 声明顺序。
+        logger.warning("EPUB 阅读顺序解析失败，回退按文件名自然排序：%s", e)
         return []
 
 

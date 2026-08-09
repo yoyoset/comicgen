@@ -188,7 +188,11 @@ class Runner:
             if data.get("input") and data["input"] != str(input_path.resolve()):
                 return {}
             return {p["image"]: Page.from_dict(p) for p in data.get("pages", [])}
-        except Exception:
+        except Exception as e:
+            # 原子写盘保证崩溃不会留下截断 JSON，所以读到失败要么是磁盘异常、要么是
+            # 新版本 schema 不兼容旧文件——两者都不能静默当"没有缓存"，那会把整个任务
+            # 从零重跑并让用户以为一切正常。仍返回空（没有别的恢复路径），但留下日志。
+            self.log(f"[警告] 读取 pages.json 失败，本次按全新任务处理：{e}")
             return {}
 
     @staticmethod
