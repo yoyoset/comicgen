@@ -9,7 +9,11 @@ from ..core.config import Config
 from ..core.models import DIRECTION_HORIZONTAL, DIRECTION_VERTICAL, Region
 from ..infra.logging import logger
 
-_COL_GAP = 1.35   # 竖排列距倍数
+# 竖排视觉参数，按中文排版的观感定的经验值，未做严格排版学校准：
+# 列距取 1.35 倍字号、行内字距 1.05 倍字号——比系统字体默认的紧密字距多留一点空，
+# 避免多列竖排时列与列粘连。视觉参数，宁可留白也不要字挤字。
+_COL_GAP = 1.35
+_VERTICAL_ADV = 1.05
 
 
 _FONT_FALLBACKS = (
@@ -159,7 +163,7 @@ def _fits(draw, text: str, font, bw: int, bh: int, direction: str, sw: int = 0) 
     """sw（描边宽度）会让实际墨迹比字号本身宽/高各多出 sw 一圈，排版判定要预留出来。"""
     eff_bw, eff_bh = max(1, bw - 2 * sw), max(1, bh - 2 * sw)
     if direction == DIRECTION_VERTICAL:
-        per_col = max(1, int(eff_bh // (font.size * 1.05)))
+        per_col = max(1, int(eff_bh // (font.size * _VERTICAL_ADV)))
         n_cols = -(-len(text.replace("\n", "")) // per_col)
         return n_cols * font.size * _COL_GAP <= eff_bw
     return len(_wrap_horizontal(draw, text, font, eff_bw)) * _line_advance(font) <= eff_bh
@@ -241,7 +245,7 @@ def _draw_vertical(draw, text, font, bx, by, bw, bh, color, stroke, sw):
     if not chars:
         return
     eff_bh = max(1, bh - 2 * sw)
-    adv = font.size * 1.05
+    adv = font.size * _VERTICAL_ADV
     per_col = max(1, int(eff_bh // adv))
     col_w = font.size * _COL_GAP
     n_cols = -(-len(chars) // per_col)

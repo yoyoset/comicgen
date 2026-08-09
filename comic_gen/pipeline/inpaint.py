@@ -42,7 +42,10 @@ class Inpainter:
         for mode in (cv2.THRESH_BINARY_INV, cv2.THRESH_BINARY):
             _, m = cv2.threshold(crop, 0, 255, mode + cv2.THRESH_OTSU)
             ratio = float((m > 0).mean())
-            if 0.005 < ratio < 0.6:  # 文字应是区域内的少数派
+            # 文字应是区域内的少数派：0.005~0.6 与目标占比 0.15 是保守的视觉启发式，
+            # 未在真实漫画素材上校准（最坏后果是取色/抹字效果差，不会出错）；
+            # 有素材后可用 scripts/diagnose_page.py 对同一批页比对两种阈值产出再定。
+            if 0.005 < ratio < 0.6:
                 score = abs(ratio - 0.15)
                 if best is None or score < best[0]:
                     best = (score, m)

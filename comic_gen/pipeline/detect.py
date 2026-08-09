@@ -158,6 +158,9 @@ class ComicDetector:
             x1, y1, x2, y2 = [round(v) for v in box.tolist()]
             x1, y1 = max(0, x1), max(0, y1)
             bw, bh = max(1, x2 - x1), max(1, y2 - y1)
+            # 高明显大于宽（>1.15 倍）判竖排：日漫竖排气泡窄而长，横排气泡宽而矮。
+            # 经验阈值，未在多种漫画字体/字号下校准；判错方向的后果是译文排版方向
+            # 不对（视觉问题），不会丢字。
             direction = DIRECTION_VERTICAL if bh > bw * 1.15 else DIRECTION_HORIZONTAL
             kind = "text_bubble" if label == LABEL_TEXT_BUBBLE else "text_free"
             regions.append(
