@@ -42,9 +42,11 @@ def _install_excepthook() -> None:
 
 def main():
     if getattr(sys, "frozen", False):
-        # EXE：无控制台时把日志写文件，便于排错
+        # EXE：无控制台时把日志写文件，便于排错。mode="w"：每次启动从头开始，
+        # 只保留最近一次会话——追加模式会让模型加载的 tqdm 进度条、torch/llama-cpp
+        # 噪音等每次运行都叠进同一个文件，长期使用无上限增长。
         if sys.stdout is None:
-            log = open(os.path.join(os.path.dirname(sys.executable), "comicgen.log"), "a", encoding="utf-8", buffering=1)
+            log = open(os.path.join(os.path.dirname(sys.executable), "comicgen.log"), "w", encoding="utf-8", buffering=1)
             sys.stdout = sys.stderr = log
         try:
             from ..pipeline._cuda_runtime import preload_cuda_runtime

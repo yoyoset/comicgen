@@ -105,6 +105,26 @@ def test_job_file_handler_writes_timestamped_lines(tmp_path):
     assert "comic_gen" in content
 
 
+def test_job_file_handler_truncates_between_runs(tmp_path):
+    """run.log 是"本次运行"的日志：同一工作目录（文件夹输入默认复用）再次运行时
+    必须从干净开始，不能把上一轮的记录叠加进来无限增长。回归测试 mode="w" 语义。"""
+    handler = attach_job_file_handler(tmp_path)
+    try:
+        logger.warning("第一轮")
+    finally:
+        detach_handler(handler)
+
+    handler = attach_job_file_handler(tmp_path)
+    try:
+        logger.warning("第二轮")
+    finally:
+        detach_handler(handler)
+
+    content = (tmp_path / "run.log").read_text(encoding="utf-8")
+    assert "第二轮" in content
+    assert "第一轮" not in content
+
+
 def test_debug_level_filtered_by_default():
     """logger 设的是 INFO，DEBUG 记录不该被转发出去。"""
     received = []

@@ -54,9 +54,13 @@ def attach_job_file_handler(work_dir: Path) -> logging.Handler:
     """额外挂一个写进 `<work_dir>/run.log` 的文件 handler，带时间戳和级别——
     之前的 print(file=sys.stderr) 完全没有这些，事后没法知道某条警告是什么时候
     发生的。同样需要之后调用 detach_handler 卸载。
+
+    mode="w"：run.log 是"本次运行"的日志。文件夹输入的工作目录（即输出目录）会在
+    多次运行间复用，用追加模式的话每跑一次就叠一轮，长年使用无上限增长；改成每次
+    运行从干净开始，恢复/排错以 pages.json/job.json 为准，run.log 只负责当次现场。
     """
     path = Path(work_dir) / "run.log"
-    handler = logging.FileHandler(path, encoding="utf-8")
+    handler = logging.FileHandler(path, mode="w", encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     logger.addHandler(handler)
     return handler

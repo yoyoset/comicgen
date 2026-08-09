@@ -144,6 +144,10 @@ class BatchController(QtCore.QObject):
         _retired_threads 保着引用——宁可多个对象占用内存，也不能让 GC 在 running 中
         销毁 QThread（那会 0xC0000409）。
         """
+        # 先清掉已经真正退出的：_retired_threads 只留还在 running 的，否则这个列表
+        # 在长跑会话里只进不出、无限增长（正常情况下它几乎总是空的，上界是"同时
+        # 还在 running 的旧线程数"）。
+        self._retired_threads = [t for t in self._retired_threads if not t.isFinished()]
         old = self._thread
         self._thread = None
         if old is not None:
