@@ -53,24 +53,49 @@ def suppress_overlaps(
 
     按 score 降序保留，丢弃与已保留框 IoU 超过 iou_thr、或被已保留框包含比例超过
     contain_thr 的框（包含判据覆盖"大框套小框"的情况，纯 IoU 会漏判）。
+
+    实现用均匀网格空间索引（cell 边长取各框最大边长的中位数，漫画同页的气泡尺度接近）
+    把"每个候选只和同 cell 里的已保留框比较"从对全部已保留框的 O(n²) 扫描降成期望
+    O(n)。正确性依据：两框有重叠 ⇔ 重叠区域里的任意点所在 cell 同时被两框占据；a
+    完全包含 b 时 b 占据的每个 cell 也必被 a 占据。因此候选框只需在自己占到的 cell
+    里找，漏不了任何应被判重复的框。病态布局（一个整页大框）最坏仍退化回 O(n)，但
+    只针对那一个框，实测样本里不会出现（见 tests/test_detect_dedupe.py 的差分测试）。
     """
     ordered = sorted(regions, key=lambda r: r.score, reverse=True)
+    if not ordered:
+        return []
+
+    boxes = [_to_xyxy(r.bbox) for r in ordered]
+    dims = sorted(max(b[2] - b[0], b[3] - b[1]) for b in boxes)
+    cell = max(1, dims[len(dims) // 2])
+
+    grid: dict[tuple[int, int], list[int]] = {}
     kept: list[Region] = []
-    kept_boxes: list[list[int]] = []
-    for r in ordered:
-        rbox = _to_xyxy(r.bbox)
-        # 包含判据要双向检查：处理顺序按 score 降序，若不检查"已保留框被新框包含"这个
-        # 方向，一个 score 更高但面积更小的框会先入选，导致后面 score 更低的外层大框
-        # 因为"新框包含已保留框"而不是"新框被已保留框包含"漏判为不重复。
+    for i, rbox in enumerate(boxes):
+        x1, y1, x2, y2 = rbox
+        c_x1, c_y1 = x1 // cell, y1 // cell
+        c_x2, c_y2 = x2 // cell, y2 // cell
+        cand_ids = {
+            j
+            for cy in range(c_y1, c_y2 + 1)
+            for cx in range(c_x1, c_x2 + 1)
+            for j in grid.get((cx, cy), ())
+        }
         is_dup = any(
-            _iou(rbox, kb) > iou_thr
-            or _containment(rbox, kb) > contain_thr
-            or _containment(kb, rbox) > contain_thr
-            for kb in kept_boxes
+            # 包含判据要双向检查：处理顺序按 score 降序，若不检查"已保留框被新框包含"
+            # 这个方向，一个 score 更高但面积更小的框会先入选，导致后面 score 更低的
+            # 外层大框因为"新框包含已保留框"而不是"新框被已保留框包含"漏判为不重复。
+            _iou(rbox, boxes[j]) > iou_thr
+            or _containment(rbox, boxes[j]) > contain_thr
+            or _containment(boxes[j], rbox) > contain_thr
+            for j in cand_ids
         )
-        if not is_dup:
-            kept.append(r)
-            kept_boxes.append(rbox)
+        if is_dup:
+            continue
+        kept.append(ordered[i])
+        for cy in range(c_y1, c_y2 + 1):
+            for cx in range(c_x1, c_x2 + 1):
+                grid.setdefault((cx, cy), []).append(i)
     return kept
 
 

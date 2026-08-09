@@ -94,6 +94,65 @@ def test_containment_helper_not_symmetric():
     assert _containment(big, small) < 0.1
 
 
+def _brute_force_suppress(regions, iou_thr=0.5, contain_thr=0.9):
+    """对照基准：逐个与全部已保留框比较的 O(n²) 实现（网格优化的正确性参照）。"""
+    ordered = sorted(regions, key=lambda r: r.score, reverse=True)
+    kept: list[Region] = []
+    kept_boxes: list[list[int]] = []
+    for r in ordered:
+        rbox = [r.bbox[0], r.bbox[1], r.bbox[0] + r.bbox[2], r.bbox[1] + r.bbox[3]]
+        is_dup = any(
+            _iou(rbox, kb) > iou_thr
+            or _containment(rbox, kb) > contain_thr
+            or _containment(kb, rbox) > contain_thr
+            for kb in kept_boxes
+        )
+        if not is_dup:
+            kept.append(r)
+            kept_boxes.append(rbox)
+    return kept
+
+
+def _regions_equal(a, b):
+    return [(r.bbox, r.score, r.kind) for r in a] == [(r.bbox, r.score, r.kind) for r in b]
+
+
+def test_grid_matches_brute_force_on_random_layouts():
+    """网格空间索引与逐对比较的 O(n²) 基准必须产出完全相同的结果。
+
+    这个差分测试保证把 O(n²) 改成期望 O(n) 空间索引后，去重判定没有行为漂移——
+    网格去重的正确性依赖"重叠/包含的框必共享至少一个 cell"，随机布局覆盖了
+    大框套小框、跨 cell 重叠、分数乱序等边界。
+    """
+    import random
+
+    rng = random.Random(20260809)
+    for n in (0, 1, 2, 5, 20, 80):
+        for _ in range(20):
+            regions = []
+            for i in range(n):
+                w = rng.randint(20, 200)
+                h = rng.randint(20, 200)
+                x = rng.randint(0, 800 - w)
+                y = rng.randint(0, 1200 - h)
+                regions.append(
+                    Region(
+                        bbox=[x, y, w, h],
+                        score=rng.uniform(0.3, 0.99),
+                        kind=f"k{i}",
+                    )
+                )
+            assert _regions_equal(suppress_overlaps(regions), _brute_force_suppress(regions)), n
+
+
+def test_grid_handles_many_identical_duplicate_boxes():
+    """同一坐标的重复框（实测场景：一个 query 在多个类别超阈值）只留 score 最高的那个。"""
+    dupes = [Region(bbox=[100, 100, 50, 50], score=0.9 - i * 0.01, kind=f"d{i}") for i in range(30)]
+    kept = suppress_overlaps(dupes)
+    assert len(kept) == 1
+    assert kept[0].score == 0.9
+
+
 # ---------------------------------------------------------------- reading_order
 
 
