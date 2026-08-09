@@ -306,8 +306,11 @@ class Runner:
             rtl = self.cfg.source_lang == "ja"
 
             def _detect_page(p):
-                p.regions = reading_order(det.detect(open_page(p)), rtl=rtl)
-                p.width, p.height = Image.open(page_img[p.image]).size
+                # 一次打开同时拿到尺寸与推理输入——旧实现 open 两次（detect 一次、
+                # 再 Image.open(...).size 一次），每次都要读文件头/解压，白费一页开销。
+                img = open_page(p)
+                p.width, p.height = img.size
+                p.regions = reading_order(det.detect(img), rtl=rtl)
                 p.status = STATUS_DETECTED
 
             report = self._run_stage(

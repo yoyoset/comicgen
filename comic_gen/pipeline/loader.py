@@ -295,6 +295,7 @@ def _pack_pdf(loaded: LoadedInput, translated_dir: Path, output_path: Path,
               pdf_dpi: int = 150, log=None) -> Path:
     """把翻译后的每页 PNG 合并回 PDF（每页整页铺图）。"""
     import fitz
+    from PIL import Image as _IMG  # 在函数顶部导入一次，不在每页循环里重复 import
 
     orig_map = dict(zip(loaded.rel_names, loaded.pages))
     ensure_dir(output_path.parent)
@@ -307,8 +308,6 @@ def _pack_pdf(loaded: LoadedInput, translated_dir: Path, output_path: Path,
             log(f"[警告] {name} 翻译未完成，打包时使用原图")
         # 以图片像素 @pdf_dpi 推导页面尺寸（与输入渲染 DPI 一致；回退的原图本来就是
         # 按 pdf_dpi 光栅化出来的 PNG，尺寸假设同样成立）
-        from PIL import Image as _IMG
-
         with _IMG.open(img) as im:
             w_pt, h_pt = im.size[0] * 72 / pdf_dpi, im.size[1] * 72 / pdf_dpi
         page = out.new_page(width=w_pt, height=h_pt)
