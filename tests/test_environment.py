@@ -80,3 +80,23 @@ def test_detect_environment_skips_model_check_when_disabled(tmp_path):
     report = detect_environment(model_dir=str(tmp_path), check_models=False)
     assert report.models_cached == {}
     assert report.model_status == {}
+
+
+def test_offline_mode_roundtrip(monkeypatch):
+    """enable_offline_mode 设的 env/常量能被 restore_offline_mode 恢复——离线只是
+    "本次运行"的状态，不能残留成进程级永久态（否则之后在模型管理页下载当时没下好的
+    模型会被 HF 的 offline 模式挡住，报"联网下载也失败"）。"""
+    import os
+
+    from comic_gen.core.environment import enable_offline_mode, restore_offline_mode
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+
+    enable_offline_mode()
+    assert os.environ.get("HF_HUB_OFFLINE") == "1"
+    assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
+
+    restore_offline_mode()
+    assert os.environ.get("HF_HUB_OFFLINE") is None
+    assert os.environ.get("TRANSFORMERS_OFFLINE") is None

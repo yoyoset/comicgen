@@ -648,6 +648,28 @@ def test_run_detaches_logging_handlers_after_completion(tmp_path, monkeypatch):
     assert len(pipeline_logger.handlers) == before
 
 
+def test_run_restores_offline_mode_after_completion(tmp_path, monkeypatch):
+    """模型齐备时 run() 会开离线加速，但跑完必须恢复——离线是"本次运行"的状态，
+    残留的 HF_HUB_OFFLINE env 会挡住之后在模型管理页下载当时还没下好的模型。"""
+    import os
+
+    import comic_gen.core.environment as env_mod
+
+    _make_fake_pipeline(monkeypatch)
+    input_dir = _make_input_folder(tmp_path, n=1)
+    output_dir = tmp_path / "output"
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
+    # 让本次任务需要的模型全部"已缓存"，触发 _go_offline_if_ready 开离线
+    monkeypatch.setattr(env_mod, "is_model_cached", lambda k, bindings=None: True)
+
+    Runner(Config(translator="mock", source_lang="ja")).run(str(input_dir), str(output_dir))
+
+    assert os.environ.get("HF_HUB_OFFLINE") is None
+    assert os.environ.get("TRANSFORMERS_OFFLINE") is None
+
+
 # ---------------------------------------------------------------- job.json 快照
 
 

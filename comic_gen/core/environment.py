@@ -89,6 +89,26 @@ def enable_offline_mode() -> None:
             pass
 
 
+def restore_offline_mode() -> None:
+    """把 enable_offline_mode 设过的状态恢复原状（本次 run 结束后调用）。
+
+    离线开关此前是进程级永久态：一个任务在模型齐备时打开后永不关闭，之后用户在
+    模型管理页下载一个当时还没下好的模型，会被 HF 的 offline 模式直接挡住并报
+    "联网下载也失败"——与 enable_offline_mode 的"本次运行不联网"语义矛盾。恢复时
+    只移除我们设过的两个环境变量（用户若本来就手动设过 offline 会先被 enable 覆盖，
+    这里选择不区分，语义是"任务结束后回到运行前的状态"）。
+    """
+    os.environ.pop("HF_HUB_OFFLINE", None)
+    os.environ.pop("TRANSFORMERS_OFFLINE", None)
+    for mod, attr in (("huggingface_hub.constants", "HF_HUB_OFFLINE"),
+                      ("transformers.utils.hub", "_is_offline_mode")):
+        try:
+            import importlib
+            setattr(importlib.import_module(mod), attr, False)
+        except Exception:
+            pass
+
+
 def find_model_path(key: str, model_dir: str | None = None,
                      bindings: Mapping[str, str] | None = None) -> str | None:
     """返回某个模型实际命中的本地路径，未就绪返回 None。

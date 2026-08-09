@@ -151,17 +151,23 @@ class Runner:
 
         return needed_model_keys(self.cfg)
 
-    def _go_offline_if_ready(self) -> None:
-        """本次任务要用的模型都在本地时切离线，免得网络不通时白等 HF 的 etag 重试。"""
+    def _go_offline_if_ready(self) -> bool:
+        """本次任务要用的模型都在本地时切离线，免得网络不通时白等 HF 的 etag 重试。
+
+        返回是否真的切了离线——调用方（run）负责在任务结束后调用 restore_offline_mode
+        恢复原状，离线只是"本次运行"的状态，不能残留成进程级永久态（否则之后在模型
+        管理页下载一个当时没下好的模型会被 offline 挡住）。
+        """
         from ..core.environment import enable_offline_mode, is_model_cached
 
         missing = [k for k in self._needed_model_keys()
                    if not is_model_cached(k, bindings=self.cfg.model_paths)]
         if missing:
             self.log(f"以下模型尚未就位，需要联网获取: {'、'.join(missing)}")
-            return
+            return False
         enable_offline_mode()
         self.log("模型均已在本地，本次运行不联网")
+        return True
 
     # ------------------------------------------------------------ 中间产物
     @staticmethod
@@ -238,7 +244,7 @@ class Runner:
         if output_path is not None:
             self._check_output_safe(input_path, Path(output_path))
 
-        self._go_offline_if_ready()
+        offline_enabled = self._go_offline_if_ready()
         work_dir = Path(work_dir_override) if work_dir_override else self._work_dir(input_path, output_path)
 
         # 叶子模块（ocr/translate/render）里用 logging.getLogger(__name__) 记的警告/
@@ -259,6 +265,12 @@ class Runner:
                 input_path, output_path, work_dir, progress, rerender, load_cb, should_cancel
             )
         finally:
+            # 离线只是本次运行的状态（_go_offline_if_ready 的语义），跑完恢复原状——
+            # 否则残留的 offline env 会挡住之后在模型管理页下载当时还没下好的模型。
+            if offline_enabled:
+                from ..core.environment import restore_offline_mode
+
+                restore_offline_mode()
             detach_handler(cb_handler)
             detach_handler(file_handler)
 
