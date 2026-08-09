@@ -176,7 +176,7 @@ def load_pages(pages_json_path: Path) -> tuple[list, str | None]:
 
 def save_pages(pages_json_path: Path, pages: list, input_fingerprint: str | None) -> None:
     """写 pages.json，格式与 Runner._save_pages 保持一致，两边可以互相读写同一份文件。"""
-    data = {"pages": [p.to_dict() for p in pages]}
+    data: dict[str, object] = {"pages": [p.to_dict() for p in pages]}
     if input_fingerprint:
         data["input"] = input_fingerprint
     save_json(data, pages_json_path)

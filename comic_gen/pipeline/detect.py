@@ -137,7 +137,9 @@ class ComicDetector:
 
         self.device = device if (device == "cuda" and torch.cuda.is_available()) else "cpu"
         self.processor = AutoImageProcessor.from_pretrained(repo)
-        self.model = RTDetrV2ForObjectDetection.from_pretrained(repo).to(self.device).eval()
+        # transformers 的存根把 from_pretrained 类方法误标成实例 __call__，repo 字符串
+        # 会被判成"不是 PreTrainedModel"——这是存根缺陷不是真实问题，运行时行为正常。
+        self.model = RTDetrV2ForObjectDetection.from_pretrained(repo).to(self.device).eval()  # type: ignore[arg-type]
         self.threshold = threshold
 
     @torch.no_grad()
@@ -153,7 +155,7 @@ class ComicDetector:
             label = int(label)
             if label == LABEL_BUBBLE:
                 continue
-            x1, y1, x2, y2 = [int(round(v)) for v in box.tolist()]
+            x1, y1, x2, y2 = [round(v) for v in box.tolist()]
             x1, y1 = max(0, x1), max(0, y1)
             bw, bh = max(1, x2 - x1), max(1, y2 - y1)
             direction = DIRECTION_VERTICAL if bh > bw * 1.15 else DIRECTION_HORIZONTAL

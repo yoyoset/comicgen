@@ -27,7 +27,14 @@ from ..core.models import (
     STATUS_TRANSLATED,
     Page,
 )
-from ..core.utils import atomic_save_image, available_space, ensure_dir, estimate_output_requirement, load_json, save_json
+from ..core.utils import (
+    atomic_save_image,
+    available_space,
+    ensure_dir,
+    estimate_output_requirement,
+    load_json,
+    save_json,
+)
 from ..infra.engine_cache import EngineCache
 from .loader import LoadedInput, default_output_path, load_input, pack_output
 
@@ -162,7 +169,7 @@ class Runner:
         return work_dir / "pages.json"
 
     def _save_pages(self, work_dir: Path, pages: list[Page], input_path: Path | None = None):
-        data = {"pages": [p.to_dict() for p in pages]}
+        data: dict[str, object] = {"pages": [p.to_dict() for p in pages]}
         if input_path is not None:
             data["input"] = str(input_path.resolve())
         save_json(data, self._pages_file(work_dir))
@@ -231,7 +238,11 @@ class Runner:
         # 到 self.log（Runner 自己的调用点、UI 已经接好线的那个回调），并额外挂一份
         # 带时间戳的 <work_dir>/run.log。只在 run() 执行期间挂着，跑完就卸载——
         # 不想让测试里构造几十个 Runner() 都各自往同一个模块级 logger 上堆 handler。
-        from ..infra.logging import attach_callback_handler, attach_job_file_handler, detach_handler
+        from ..infra.logging import (
+            attach_callback_handler,
+            attach_job_file_handler,
+            detach_handler,
+        )
 
         cb_handler = attach_callback_handler(lambda msg: self.log(msg))
         file_handler = attach_job_file_handler(work_dir)

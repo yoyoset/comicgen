@@ -210,6 +210,7 @@ def resolve_status(key: str, *, bindings: Mapping[str, str] | None = None,
 
     if spec.layout == LAYOUT_FILE:
         if is_binding:
+            assert bound is not None  # is_binding 保证 bound 非空，供类型检查器收窄
             p = Path(bound)
             exists = p.is_file()
             size = p.stat().st_size if exists else 0
@@ -226,6 +227,7 @@ def resolve_status(key: str, *, bindings: Mapping[str, str] | None = None,
 
     # LAYOUT_DIR
     if is_binding:
+        assert bound is not None  # is_binding 保证 bound 非空，供类型检查器收窄
         p = Path(bound)
         exists = p.is_dir()
         missing = _missing_members(p, spec.member_files) if exists else tuple(g[0] for g in spec.member_files)

@@ -5,11 +5,16 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from ..core.config import Config
 from ..core.errors import InputError, ModelError
 from ..core.manifest import MODEL_MANIFEST
-from ..core.model_locator import STATUS_PATH_BROKEN, STATUS_SIZE_MISMATCH, resolve_status
+from ..core.model_locator import (
+    STATUS_PATH_BROKEN,
+    STATUS_SIZE_MISMATCH,
+    resolve_status,
+)
 from ..infra.logging import logger
 
 _LANG_NAMES = {"ja": "日文", "en": "英文", "zh": "中文", "other": "原文语言"}
@@ -303,7 +308,9 @@ class _LlamaGGUFTranslator(BaseTranslator):
             ) from e
 
     def _call(self, prompt: str, max_tokens: int) -> str:
-        resp = self.llm.create_chat_completion(
+        # llama_cpp 的返回类型被声明成两个响应形状的并集（流式/非流式），mypy 索引
+        # 不了；实际调用没开 stream，结果一定是非流式 dict，这里按 Any 处理。
+        resp: Any = self.llm.create_chat_completion(
             messages=[
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": prompt},
@@ -313,7 +320,11 @@ class _LlamaGGUFTranslator(BaseTranslator):
             max_tokens=max_tokens,
             repeat_penalty=self.repeat_penalty,
         )
-        return resp["choices"][0]["message"]["content"].strip()
+        content = resp["choices"][0]["message"]["content"]
+        # content 可能为 None（模型只产出 reasoning/格式异常时），直接 .strip() 会炸——
+        # 旧实现这个位置一旦崩溃，整页被 _run_stage 标成失败而不是走逐条重试。
+        # 落成空串后 _parse_numbered 解析不出任何编号，自然进入逐条重试 + 输出校验。
+        return (content or "").strip()
 
     def translate(self, texts: list[str], cfg: Config) -> list[str]:
         return self._translate_batch_llm(texts, cfg, self._call)
