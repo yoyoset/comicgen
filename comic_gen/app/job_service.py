@@ -14,6 +14,7 @@ from typing import Callable
 from ..core.config import Config
 from ..core.errors import format_job_failure
 from ..core.job import JobReport
+from ..pipeline.registry import SUPPORTED_SOURCE_LANGS, TRANSLATOR_REGISTRY
 from ..pipeline.runner import Runner
 
 
@@ -47,8 +48,10 @@ def _build_arg_parser():
     )
     p.add_argument("input", help="输入路径：文件夹 / ZIP / CBZ / RAR / CBR / EPUB / PDF")
     p.add_argument("-o", "--output", default=None, help="输出路径，留空按默认规则推导")
-    p.add_argument("--translator", default="sakura", choices=["sakura", "llm", "mock"])
-    p.add_argument("--source-lang", default="ja", choices=["ja", "en", "zh", "other"])
+    # choices 从 pipeline.registry 推导而不是这里再写一份硬编码列表——加新引擎/新
+    # 语言只改注册表，CLI 自动跟上，不会出现"注册表能跑但 CLI 传不进去"的漂移。
+    p.add_argument("--translator", default="sakura", choices=tuple(TRANSLATOR_REGISTRY))
+    p.add_argument("--source-lang", default="ja", choices=SUPPORTED_SOURCE_LANGS)
     p.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     return p
 

@@ -10,11 +10,14 @@ if/else，没有注册表）里的硬编码分发。加一个新引擎/后端，
 旧代码里 `_needed_model_keys` 只在 `source_lang == "ja"` 时加 `ocr_ja`，从来没有
 任何分支会加 `ocr_other`，非日文任务的离线就绪检查永远漏掉这个模型。
 
+CLI（`app/job_service.py` 的 `--translator`/`--source-lang` choices）也已改成从这里
+读——源语言合法值见本文件 `SUPPORTED_SOURCE_LANGS`，不再各写一份。
+
 明确不做（范围控制，不是遗漏）：`ui/workers.py` 的模型下载面板、
 `ui/views/translate_view.py` 的引擎下拉框仍然是各自的硬编码列表，没有改成从这里
-读。那两处改动面在 UI 层，没有测试基础设施，改错了不容易发现；等真的要加第三个
-翻译引擎/OCR 后端时再顺带一起做，届时才有真实需求校验改法对不对，而不是提前为
-假想的第三个引擎做设计。
+读（`batch_view.py` 复用 `translate_view` 那份，不是第三份）。那两处改动面在 UI
+层，没有测试基础设施，改错了不容易发现；等真的要加第三个翻译引擎/OCR 后端时再
+顺带一起做，届时才有真实需求校验改法对不对，而不是提前为假想的第三个引擎做设计。
 """
 from __future__ import annotations
 
@@ -139,6 +142,18 @@ def _build_ocr_registry() -> dict[str, OcrBackendEntry]:
 
 
 OCR_REGISTRY: dict[str, OcrBackendEntry] = _build_ocr_registry()
+
+
+# 源语言合法值的单一来源：CLI（app/job_service.py 的 --source-lang choices）从这里
+# 读，不再各写一份。运行时"某个语言有没有 OCR 后端"的真实判据是 OCR_REGISTRY 各
+# 后端的 languages 集合（ocr_backend_for 只认注册表，不认识的源语言会 InputError），
+# 所以这里必须与注册表声明的语言并集保持一致——加新语言要同时改这里和对应后端的
+# languages。下面的断言是防漂移护栏：漂移会在 import 时立刻炸，而不是等到用户
+# 在 CLI 里选了个注册表不认的语言才报错。
+SUPPORTED_SOURCE_LANGS = ("ja", "en", "zh", "other")
+assert set(SUPPORTED_SOURCE_LANGS) == {
+    lang for entry in OCR_REGISTRY.values() for lang in entry.languages
+}, "SUPPORTED_SOURCE_LANGS 与 OCR 注册表声明的语言集合不一致，需同步修改"
 
 
 def ocr_backend_for(source_lang: str) -> OcrBackendEntry | None:

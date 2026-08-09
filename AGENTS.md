@@ -83,7 +83,7 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 
 ## 关键设计（改动前必读）
 
-1. **中间产物驱动**：每页所有阶段结果存 `<工作目录>/pages.json`，含 `input` 指纹（绝对路径），指纹不符则丢弃缓存。状态机：pending→detected→ocred→translated→rendered；`rerender=True` 会把 rendered 打回 translated 强制重渲染。**四个阶段全部逐页 try + 每页落盘**，单页失败不致整阶段丢失。另有 `<工作目录>/job.json`：本次任务的完整 `Config` 快照 + 各模型实际解析到的绝对路径 + 各阶段耗时，供事后诊断（`pages.json` 只记 `input` 一项，不够定位"当时用的是什么配置"）；`<工作目录>/run.log` 是叶子模块（`ocr.py`/`translate.py`/`render.py`）通过 `infra.logging` 记的带时间戳警告/提示。
+1. **中间产物驱动**：每页所有阶段结果存 `<工作目录>/pages.json`，含 `input` 指纹（绝对路径），指纹不符则丢弃缓存。状态机：pending→detected→ocred→translated→rendered；`rerender=True` 会把 rendered 打回 translated 强制重渲染。**四个阶段全部逐页 try + 每页落盘**，单页失败不致整阶段丢失。另有 `<工作目录>/job.json`：本次任务的完整 `Config` 快照 + 各模型实际解析到的绝对路径 + 各阶段耗时，供事后诊断（`pages.json` 只记 `input` 一项，不够定位"当时用的是什么配置"）；`<工作目录>/run.log` 是叶子模块（`ocr.py`/`translate.py`/`render.py`）通过 `infra.logging` 记的带时间戳警告/提示，**每次 run 从干净开始（`mode="w"`）**——文件夹输入的工作目录在多次运行间复用，追加会让它在长期使用中无限增长。
 2. **工作目录规则**：文件夹输入 → 输出目录即工作目录；压缩包/PDF 输入 → `<输出文件名去扩展>/` 为工作目录，`_extract/src` 为解包区（**每次 run 先清空再解包**，防止不同输入污染）。`Runner._check_output_safe` 阻止输出覆盖原图（同路径或输出在输入目录内）。**旧目录污染有两道清理**：全新任务（无缓存命中）开工前清空 `translated/`（里面只可能留下一个不同输入/旧任务的图）；`pack_output` 打包文件夹输出时清掉输出目录里不属于当前页清单的图片文件（`loader._clean_stale_output_images`，跳过 `translated/`/`_extract/`）——否则换过输入后交付物会残留上一轮的旧页。
    **四阶段编排统一走 `Runner._run_stage`**：检测/OCR/翻译/渲染的循环骨架（todo 过滤、取消检查、逐页 try + `error`/`error_stage` + 落盘 + 进度、阶段计时 + job.json 快照）完全相同，只有"每页做什么"不同——用 `per_page` 回调注入，不再四处各写一份几乎相同的 15 行循环。
 3. **支持格式**：文件夹（**递归**子目录）、ZIP/CBZ、RAR/CBR（解压需系统 UnRAR，输出转 CBZ）、EPUB（按 OPF spine 排序，重打包保 mimetype 规范）、PDF（PyMuPDF 每页 @150dpi 渲染为图，输出合并回 PDF；可通过 Config.pdf_dpi 调整）。
@@ -91,7 +91,7 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 5. **全部本地翻译引擎**（`Config.translator`：`sakura`/`llm`/`mock`），不联网、不需要 API Key。Sakura 为日文专用（GGUF，轻小说风格），`source_lang != "ja"` 时 `pipeline.translate.engine_lang_conflict` 会拦截并提示改用 `llm`（通用多语言 GGUF）。
 6. **多语言分工**：`Config.source_lang`（ja/en/zh/other）决定 OCR 后端——日文 manga-ocr，英/中/其它 EasyOCR；翻译引擎推荐——日文 sakura，其它 llm（`pipeline.translate.ENGINE_RECOMMENDATION`，UI 源语言变化时联动改引擎下拉）。**推理设备**（`Config.device`）四个模型现在都认了（4.3）：detect/inpaint 本来就认，manga-ocr/EasyOCR/llama.cpp 通过 `registry._wants_gpu(cfg)` 接上；请求 GPU 但没有可用 CUDA 时统一退回 CPU，不崩。
 7. **每个模型独立路径绑定**：`AppSettings.model_files`（manifest 键 → 绝对路径）经 `to_config()` 传进 `Config.model_paths`，是每次任务的不可变快照（不是进程级全局表——运行中改设置不会影响正在跑的任务）。解析顺序：显式绑定 → 本地缓存搜索（`core.model_locator`）→ 联网下载兜底。绑定失效（文件被移走）或大小不对，直接报错，绝不静默回落去联网下载新的顶替。
-8. **翻译/OCR 分发走注册表**：`pipeline/registry.py` 是翻译引擎（sakura/llm/mock）和 OCR 后端（ocr_ja/ocr_other）唯一的分发数据源；`runner._needed_model_keys`、`ocr.OcrEngine.__init__` 都从这里读，不再各自硬编码 if/elif。`pipeline.translate` 里的 `get_translator`/`engine_lang_conflict`/`ENGINE_LANG_LOCK`/`ENGINE_RECOMMENDATION` 仍然可以照常导入（模块级 `__getattr__` 惰性转发到 registry.py，避免两个模块互相需要对方顶层定义造成循环导入——这是实测复现过的真崩溃，不是预防性设计）。加一个新引擎/后端只需要在 registry.py 里加一条 Entry；`ui/workers.py` 的下载面板、`ui/views/translate_view.py` 的引擎下拉框仍是各自硬编码，留到真的要加第三个引擎/后端时再一起改。
+8. **翻译/OCR 分发走注册表**：`pipeline/registry.py` 是翻译引擎（sakura/llm/mock）和 OCR 后端（ocr_ja/ocr_other）唯一的分发数据源；`runner._needed_model_keys`、`ocr.OcrEngine.__init__` 都从这里读，不再各自硬编码 if/elif。`pipeline.translate` 里的 `get_translator`/`engine_lang_conflict`/`ENGINE_LANG_LOCK`/`ENGINE_RECOMMENDATION` 仍然可以照常导入（模块级 `__getattr__` 惰性转发到 registry.py，避免两个模块互相需要对方顶层定义造成循环导入——这是实测复现过的真崩溃，不是预防性设计）。加一个新引擎/后端只需要在 registry.py 里加一条 Entry；`app/job_service.py` 的 CLI choices（`--translator`/`--source-lang`）已经从这里推导，源语言合法值见 `registry.SUPPORTED_SOURCE_LANGS`（与 OCR 注册表语言并集有防漂移断言）；`ui/workers.py` 的下载面板、`ui/views/translate_view.py` 的引擎下拉框仍是各自硬编码（`batch_view.py` 复用 `translate_view` 那份），留到真的要加第三个引擎/后端时再一起改。
 9. **检测模型**用 `ogkalu/comic-text-and-bubble-detector`（Apache-2.0，规避 GPL 系工具的许可证风险）；类别 0=bubble 1=text_bubble 2=text_free，bubble 类丢弃。
 10. **取色**：未膨胀 mask + 腐蚀核心 + 中位数（膨胀 mask 会混入背景色导致译文发灰）。
 11. **描边策略**：仅浅色文字加黑描边，宽度随字号缩放（`max(1, round(size*0.06))`，
@@ -153,6 +153,8 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
     `_SHUTDOWN_JOB_WAIT_S=120` 秒宽限（翻译单页可能几十秒），期间泵事件循环、状态栏说明
     在等什么——不再 3 秒固定超时后销毁仍在 run() 的 QThread。`ui.app._install_excepthook`
     兜底所有未预期异常：完整堆栈落 `comicgen.log` + 人话弹窗，防止"程序无声闪退"。
+    冻结 EXE 的 `comicgen.log` 每次启动从干净开始（`mode="w"`）——只保留最近一次会话，
+    追加模式会让模型加载的 tqdm 进度条等噪音长期无限增长。
 24. **环境自检在后台线程**（`ui.workers.DiagnosticsWorker`）：`detect_environment` 对全部
     6 个模型走本地搜索，在共享大模型目录上实测要几秒（本机 3.8s）——`MainWindow._run_diagnostics`
     之前同步跑在 UI 线程，启动和每次扫描完成后界面都会冻结几秒。改线程后 `finished` 信号

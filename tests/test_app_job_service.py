@@ -13,9 +13,10 @@ from pathlib import Path
 
 from PIL import Image
 
-from comic_gen.app.job_service import rerender_job, run_job
+from comic_gen.app.job_service import _build_arg_parser, rerender_job, run_job
 from comic_gen.core.config import Config
 from comic_gen.core.models import Region
+from comic_gen.pipeline.registry import SUPPORTED_SOURCE_LANGS, TRANSLATOR_REGISTRY
 
 _SAMPLE_ZIP = Path(__file__).parent / "sample.zip"
 
@@ -117,3 +118,20 @@ def test_rerender_job_reuses_existing_work_dir(tmp_path, monkeypatch):
     second = rerender_job(str(local_zip), str(output_zip), cfg)
     assert second.status == "ok"
     assert second.total_pages == 1
+
+
+def test_cli_choices_derive_from_registry():
+    """CLI 的 --translator/--source-lang choices 必须来自 registry，不能是另一份
+    硬编码列表——否则加新引擎/新语言时会出现"注册表能跑但 CLI 传不进去"的漂移。
+    这轮改动把 choices 从字面量改为注册表推导，此测试防止未来有人改回硬编码。
+    """
+    parser = _build_arg_parser()
+    actions = {a.dest: a for a in parser._actions}
+
+    translator_choices = list(actions["translator"].choices)
+    assert translator_choices == list(TRANSLATOR_REGISTRY)
+    assert translator_choices == ["sakura", "llm", "mock"]
+
+    source_lang_choices = list(actions["source_lang"].choices)
+    assert source_lang_choices == list(SUPPORTED_SOURCE_LANGS)
+    assert source_lang_choices == ["ja", "en", "zh", "other"]

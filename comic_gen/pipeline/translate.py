@@ -257,6 +257,11 @@ class _LlamaGGUFTranslator(BaseTranslator):
         # 0（全 CPU）；GPU 是否真的可用交给 llama_cpp 自己在加载时判断，和这里改动前
         # 的行为一致，不新增一层探测逻辑。
         n_gpu_layers = -1 if cfg.device == "cuda" else 0
+        # n_ctx=4096 的取法：分块后单次调用的上下文上界 = system_prompt + 一块内
+        # 最多 _MAX_CHUNK_LINES(12) 条原文 + max_tokens 输出上限（_OUTPUT_TOKEN_CEILING，
+        # 1024）。4096 对当前分块预算充足；设太小会在长原文页被截断，设太大会增加
+        # 上下文分配的显存/分配开销。它与分块预算联动——未来调大 _MAX_CHUNK_LINES
+        # 或单条原文显著变长时，需要一并重新评估这里。
         self.llm = Llama(model_path=path, n_ctx=4096, n_gpu_layers=n_gpu_layers, verbose=False)
         self.cfg = cfg
 
