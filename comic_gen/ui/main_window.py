@@ -10,7 +10,13 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ..app.review_session import ReviewSession, load_config_for_review
 from ..core.environment import apply_model_dir
 from ..core.errors import ComicGenError, format_job_failure
-from ..core.job import JobReport, JobRequest, format_failure_report, read_original_input, resolve_pages_json
+from ..core.job import (
+    JobReport,
+    JobRequest,
+    format_failure_report,
+    read_original_input,
+    resolve_pages_json,
+)
 from ..core.manifest import MODEL_MANIFEST
 from ..core.settings import AppSettings
 from ..pipeline.runner import Runner

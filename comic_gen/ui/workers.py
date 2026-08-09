@@ -7,7 +7,7 @@ import traceback
 
 from PySide6 import QtCore
 
-from ..core.errors import ComicGenError, format_job_failure  # noqa: F401 (re-export for callers)
+from ..core.errors import ComicGenError, format_job_failure
 from ..core.job import JobRequest
 from ..core.manifest import MODEL_MANIFEST
 from ..core.settings import AppSettings

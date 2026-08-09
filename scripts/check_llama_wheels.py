@@ -1,4 +1,6 @@
-import urllib.request, re
+import re
+import urllib.request
+
 for idx in ("cu124", "cu121"):
     url = f"https://abetlen.github.io/llama-cpp-python/whl/{idx}/llama-cpp-python/"
     try:

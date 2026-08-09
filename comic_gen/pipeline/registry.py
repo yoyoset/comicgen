@@ -25,8 +25,8 @@ from ..core.config import Config
 from ..core.errors import ModelError
 
 if TYPE_CHECKING:
-    from .translate import BaseTranslator
     from ..core.contracts import OcrBackend
+    from .translate import BaseTranslator
 
 
 @dataclass(frozen=True)

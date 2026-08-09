@@ -54,3 +54,26 @@ comicgen = "comic_gen.app.job_service:main"
 
 [tool.setuptools.packages.find]
 include = ["comic_gen*"]
+
+# ---- 质量门禁（工具本体装在本机 venv，故意不进依赖闭包——见 requirements-lock.txt
+#      头注释"重新生成闭包脚本不在库里"，加了会让 lock 对不上声明闭包）----
+
+[tool.ruff]
+# 门禁规则只开三类真正抓问题的：F（pyflakes：未用导入/未定义名/重复定义）、
+# I（isort：import 分组排序）、E9（语法错误）。刻意不开 E/W 全量——项目注释中文
+# 密集，行宽规则会制造海量与质量无关的噪音；不开 BLE001/S110——"捕获 → 翻译成
+# 人话"和 best-effort 兜底是全局工程原则明确允许的模式。
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["F", "I", "E9"]
+
+[tool.mypy]
+python_version = "3.13"
+# 只严格检查 Qt-free 层（core/infra/pipeline/app）。ui/ 依赖 PySide6 的类型存根，
+# Qt.ItemIsSelectable 这类枚举访问在存根里被标成不存在，严格检查会满屏与真实运行
+# 无关的噪音；且 AGENTS.md 明确本项目没有 UI 测试基础设施，UI 改动用离屏脚本验证。
+exclude = ["comic_gen/ui/", "entry_ui.py"]
+ignore_missing_imports = true
+warn_unused_ignores = true

@@ -12,9 +12,8 @@ from pathlib import Path
 from typing import Mapping
 
 from .manifest import MODEL_MANIFEST
-from .model_locator import ModelStatus
+from .model_locator import ModelStatus, resolve_status
 from .model_locator import clear_cache as _clear_locator_cache
-from .model_locator import resolve_status
 
 
 def apply_model_dir(model_dir: str | None) -> None:

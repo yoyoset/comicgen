@@ -202,7 +202,7 @@ class SettingsView(QtWidgets.QWidget):
         try:
             self.model_dir_edit.setText(s.model_dir)
             idx = self.device_combo.findData(s.device)
-            self.device_combo.setCurrentIndex(idx if idx >= 0 else 0)
+            self.device_combo.setCurrentIndex(max(idx, 0))
             self.dpi_spin.setValue(s.pdf_dpi)
             self.font_edit.setText(s.font_path)
             self.min_font_spin.setValue(s.min_font_size)

@@ -175,8 +175,8 @@ def _epub_image_order(src: Path) -> list[str]:
             if not xhtml_path.exists():
                 continue
             text = xhtml_path.read_text(encoding="utf-8", errors="ignore")
-            imgs = re.findall(r"<img[^>]+src=[\"']([^\"']+)[\"']", text, re.I)
-            imgs += re.findall(r"<image[^>]+href=[\"']([^\"']+)[\"']", text, re.I)
+            imgs = re.findall(r"<img[^>]+src=[\"']([^\"']+)[\"']", text, re.IGNORECASE)
+            imgs += re.findall(r"<image[^>]+href=[\"']([^\"']+)[\"']", text, re.IGNORECASE)
             for s in imgs:
                 img_path = (xhtml_path.parent / unquote(s)).resolve()
                 try:

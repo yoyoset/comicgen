@@ -38,8 +38,6 @@ class EasyOcrBackend:
         self._reader = reader
 
     def __call__(self, crop: Image.Image) -> str:
-        import numpy as np
-
         return assemble_easyocr_text(self._reader.readtext(np.array(crop)))
 
 

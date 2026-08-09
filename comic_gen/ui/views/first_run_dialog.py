@@ -10,7 +10,12 @@ from pathlib import Path
 from PySide6 import QtCore, QtWidgets
 
 from ...core.manifest import LAYOUT_FILE, MODEL_MANIFEST
-from ...core.model_locator import STATUS_MISSING, ModelStatus, plan_download_bytes, status_text
+from ...core.model_locator import (
+    STATUS_MISSING,
+    ModelStatus,
+    plan_download_bytes,
+    status_text,
+)
 from ...core.paths import detect_default_model_dir, probe_writable
 
 

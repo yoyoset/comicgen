@@ -18,7 +18,6 @@ from ..app.batch_queue import (
     QUEUE_STATUS_FAILED,
     QUEUE_STATUS_OK,
     QUEUE_STATUS_PARTIAL,
-    QUEUE_STATUS_PENDING,
     QUEUE_STATUS_RUNNING,
     BatchJob,
     BatchQueue,
