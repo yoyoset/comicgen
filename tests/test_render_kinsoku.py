@@ -10,7 +10,6 @@ from comic_gen.pipeline.render import (
     wrap_by_width,
 )
 
-
 # ---------------------------------------------------------------- wrap_by_width
 
 

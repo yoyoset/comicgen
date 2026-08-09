@@ -61,7 +61,13 @@ def find_local_gguf(filename: str, model_dir: str | None = None) -> Path | None:
     roots = gguf_search_roots(model_dir)
     key = (target, tuple(str(r) for r in roots))
     if key in _cache:
-        return _cache[key]
+        p = _cache[key]
+        # 缓存命中只信还存在的文件：文件被移走/清理后仍返回旧路径，会让调用方
+        # 拿着一个已不存在的路径去做 stat（实测会炸）或以为自己还有这份权重。
+        # 路径失效时删掉缓存重搜一次，而不是直接放行旧结果。
+        if p is None or p.is_file():
+            return p
+        del _cache[key]
 
     hits: list[Path] = []
     for root in roots:
@@ -221,7 +227,12 @@ def resolve_status(key: str, *, bindings: Mapping[str, str] | None = None,
             found = next((p for p in _default_extra_file_locations(key) if p.is_file()), None)
         if found is None:
             return ModelStatus(STATUS_MISSING)
-        size = found.stat().st_size
+        try:
+            size = found.stat().st_size
+        except OSError:
+            # 搜索命中到 stat 之间文件恰好被移走（缓存路径失效的竞态窗口），
+            # 按"未找到"处理而不是让 stat 异常一路炸到 UI。
+            return ModelStatus(STATUS_MISSING)
         return status_of(found, is_binding=False, layout=LAYOUT_FILE, exists=True,
                           size=size, expected_size=spec.size_bytes)
 

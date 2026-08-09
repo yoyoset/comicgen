@@ -1,8 +1,9 @@
 """render.py 排版度量修正的红绿测试（真实字体，不需要网络/GPU）。"""
-from PIL import Image, ImageDraw
+from pathlib import Path
+
 import numpy as np
 import pytest
-from pathlib import Path
+from PIL import Image, ImageDraw
 
 from comic_gen.core.config import Config
 from comic_gen.core.models import Region

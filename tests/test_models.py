@@ -1,6 +1,5 @@
 """Tests for core.models (offline, no models/network)."""
-import pytest
-from comic_gen.core.models import Page, Region, STATUS_PENDING, STATUS_RENDERED
+from comic_gen.core.models import STATUS_PENDING, STATUS_RENDERED, Page, Region
 
 
 def test_region_creation():

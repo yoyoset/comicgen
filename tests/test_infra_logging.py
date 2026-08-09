@@ -3,7 +3,6 @@
 logger 是模块级单例，每个测试必须自己 detach 掉挂上去的 handler，否则会在
 测试之间累积（后面的测试会收到前面测试挂的 callback 的转发）。
 """
-import logging
 
 import pytest
 

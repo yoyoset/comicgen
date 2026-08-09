@@ -120,6 +120,33 @@ def test_cache_avoids_rescan(hf_root, monkeypatch):
     assert calls == []
 
 
+def test_cache_drops_stale_path_and_rescans(hf_root, monkeypatch):
+    """缓存命中的路径文件被移走后，必须重搜而不是把已不存在的路径放行出去——
+    否则调用方拿着旧路径 stat 会炸。重搜没找到就返回 None。"""
+    f = hf_root / "gone_after_cache.gguf"
+    f.write_bytes(b"x")
+    assert find_local_gguf("gone_after_cache.gguf") == f
+
+    f.unlink()
+    assert find_local_gguf("gone_after_cache.gguf") is None
+
+
+def test_resolve_status_missing_when_cached_file_deleted(hf_root, monkeypatch):
+    """缓存的命中路径失效后 resolve_status 按"未安装"返回，而不是 stat 崩溃。"""
+    from dataclasses import replace
+    f = hf_root / "sakura-7b-qwen2.5-v1.0-iq4xs.gguf"
+    f.write_bytes(b"x" * 10)
+    patched = dict(model_locator.MODEL_MANIFEST)
+    patched["sakura"] = replace(patched["sakura"], size_bytes=10)
+    monkeypatch.setattr(model_locator, "MODEL_MANIFEST", patched)
+    st = resolve_status("sakura", model_dir=None)
+    assert st.state == STATUS_READY
+
+    f.unlink()
+    st2 = resolve_status("sakura", model_dir=None)
+    assert st2.state == STATUS_MISSING
+
+
 # ==================================================================== status_of（纯函数，表驱动）
 
 def test_status_of_ready_file():
@@ -301,11 +328,10 @@ def test_validate_candidate_rejects_wrong_magic(tmp_path):
 
 def test_validate_candidate_rejects_wrong_size():
     """典型误操作：给 Sakura 那一行选了 Qwen3 的文件——大小对不上，必须在做任何昂贵操作前拒绝。"""
-    from comic_gen.core.manifest import MODEL_MANIFEST
     import tempfile
-    spec = MODEL_MANIFEST["sakura"]
+
     with tempfile.NamedTemporaryFile(suffix=".gguf", delete=False) as f:
-        f.write(b"GGUF" + b"\x00" * 1000)  # 远小于 spec.size_bytes
+        f.write(b"GGUF" + b"\x00" * 1000)  # 远小于 manifest 里 sakura 的 size_bytes
         path = f.name
     try:
         msg = validate_candidate("sakura", path)

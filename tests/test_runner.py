@@ -1,13 +1,15 @@
 """Tests for pipeline.runner safety checks (offline)."""
 import json
-import pytest
-from pathlib import Path
 import tempfile
+from pathlib import Path
+
+import pytest
 from PIL import Image
+
+from comic_gen.core.config import Config
 from comic_gen.core.errors import OutputError
 from comic_gen.core.models import Region
 from comic_gen.pipeline.runner import Runner, select_drawable_regions
-from comic_gen.core.config import Config
 
 
 def test_check_output_safe_same_path():

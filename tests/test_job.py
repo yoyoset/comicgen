@@ -2,7 +2,7 @@
 却是"用户被告知运行结果是什么"的唯一决策点。
 """
 from comic_gen.core.job import JobReport, PageFailure, _legacy_stage_from_message
-from comic_gen.core.models import Page, STATUS_RENDERED
+from comic_gen.core.models import STATUS_RENDERED, Page
 
 
 def _rendered_page(image: str) -> Page:

@@ -71,7 +71,7 @@ def test_bound_but_broken_path_is_reported_as_not_ready(tmp_path):
 def test_all_models_ready_returns_none(tmp_path, monkeypatch):
     """反过来验证：所有 needed_model_keys 都判定 ready 时不应该拦截。直接把
     resolve_status 换成一个恒返回 READY 的假实现，不需要构造真实模型文件。"""
-    from comic_gen.core.model_locator import ModelStatus, STATUS_READY
+    from comic_gen.core.model_locator import STATUS_READY, ModelStatus
 
     def _fake_resolve_status(key, *, bindings=None, model_dir=None):
         return ModelStatus(STATUS_READY, path=Path("fake"), size=1)

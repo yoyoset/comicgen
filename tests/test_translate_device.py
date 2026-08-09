@@ -12,10 +12,10 @@ preload_cuda_runtime()
 import llama_cpp
 import pytest
 
+import comic_gen.pipeline.translate as translate_mod
 from comic_gen.core.config import Config
 from comic_gen.core.model_locator import STATUS_READY, ModelStatus
 from comic_gen.pipeline.translate import SakuraTranslator
-import comic_gen.pipeline.translate as translate_mod
 
 
 @pytest.fixture

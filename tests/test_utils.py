@@ -1,5 +1,4 @@
 """Tests for core.utils (offline, no models/network)."""
-import json
 import tempfile
 from pathlib import Path
 

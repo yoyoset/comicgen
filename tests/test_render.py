@@ -1,8 +1,10 @@
 """Tests for pipeline.render font fallback (offline, no models)."""
+from pathlib import Path
+
 import pytest
 from PIL import Image, ImageDraw
-from comic_gen.pipeline.render import _load_font, _FONT_FALLBACKS
-from pathlib import Path
+
+from comic_gen.pipeline.render import _FONT_FALLBACKS, _load_font
 
 
 def test_load_font_nonexistent():

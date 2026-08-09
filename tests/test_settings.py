@@ -1,10 +1,7 @@
 """core.settings 的离线测试：parse_or_recover 是纯函数，load/save 用 tmp_path 隔离真实文件系统。"""
 import json
 
-import pytest
-
 from comic_gen.core.settings import AppSettings, migrate_legacy_settings
-
 
 # ==================================================================== parse_or_recover（纯函数）
 

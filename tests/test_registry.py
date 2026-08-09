@@ -89,24 +89,27 @@ def test_ocr_backend_for_unknown_lang_returns_none():
 
 
 def test_wants_gpu_respects_cpu_setting_even_if_cuda_available(monkeypatch):
-    import comic_gen.pipeline.registry as registry_mod
     import torch
+
+    import comic_gen.pipeline.registry as registry_mod
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     assert registry_mod._wants_gpu(Config(device="cpu")) is False
 
 
 def test_wants_gpu_false_when_cuda_requested_but_unavailable(monkeypatch):
-    import comic_gen.pipeline.registry as registry_mod
     import torch
+
+    import comic_gen.pipeline.registry as registry_mod
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     assert registry_mod._wants_gpu(Config(device="cuda")) is False
 
 
 def test_wants_gpu_true_when_cuda_requested_and_available(monkeypatch):
-    import comic_gen.pipeline.registry as registry_mod
     import torch
+
+    import comic_gen.pipeline.registry as registry_mod
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     assert registry_mod._wants_gpu(Config(device="cuda")) is True
@@ -114,6 +117,7 @@ def test_wants_gpu_true_when_cuda_requested_and_available(monkeypatch):
 
 def test_ja_factory_passes_force_cpu_to_manga_ocr(monkeypatch):
     import manga_ocr
+
     import comic_gen.pipeline.registry as registry_mod
 
     monkeypatch.setattr(registry_mod, "_wants_gpu", lambda cfg: False)
@@ -126,6 +130,7 @@ def test_ja_factory_passes_force_cpu_to_manga_ocr(monkeypatch):
 
 def test_ja_factory_passes_model_dir_when_bound(monkeypatch):
     import manga_ocr
+
     import comic_gen.pipeline.registry as registry_mod
 
     monkeypatch.setattr(registry_mod, "_wants_gpu", lambda cfg: True)
@@ -138,6 +143,7 @@ def test_ja_factory_passes_model_dir_when_bound(monkeypatch):
 
 def test_other_factory_passes_wants_gpu_to_easyocr(monkeypatch):
     import easyocr
+
     import comic_gen.pipeline.registry as registry_mod
 
     monkeypatch.setattr(registry_mod, "_wants_gpu", lambda cfg: False)

@@ -167,6 +167,12 @@ class ModelWorker(QtCore.QObject):
                 self.log.emit(f"({i}/{total}) 下载 {spec.label}（{spec.approx_size}）…")
                 try:
                     build(key)
+                    # 下载把权重放进了磁盘，但 model_locator 的搜索结果缓存可能还停
+                    # 在"没找到"——不清掉的话，下一个任务的离线检查会继续以为缺这个
+                    # 模型，翻译引擎又会走一遍联网兜底重下（实测路径，默认缓存模式下
+                    # apply_model_dir 不会替我们清缓存）。
+                    from ..core.model_locator import clear_cache as _clear_locator_cache
+                    _clear_locator_cache()
                     msgs.append(f"[OK] {spec.label}：已下载")
                     self.log.emit(f"({i}/{total}) {spec.label} 下载完成")
                 except Exception as e:

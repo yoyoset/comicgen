@@ -5,10 +5,10 @@ manga_ocr/easyocr。
 """
 import pytest
 
+import comic_gen.pipeline.registry as registry_mod
 from comic_gen.core.config import Config
 from comic_gen.core.errors import ModelError
 from comic_gen.pipeline.ocr import OcrEngine
-import comic_gen.pipeline.registry as registry_mod
 
 
 @pytest.fixture

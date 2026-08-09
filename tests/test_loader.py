@@ -1,11 +1,13 @@
 """Tests for pipeline.loader (offline, minimal data)."""
-import pytest
 import tempfile
 import zipfile
 from pathlib import Path
+
+import pytest
 from PIL import Image
+
 from comic_gen.core.errors import InputError
-from comic_gen.pipeline.loader import load_input, pack_output, LoadedInput
+from comic_gen.pipeline.loader import LoadedInput, load_input, pack_output
 
 
 def create_test_images(tmpdir: Path, count: int = 2):
