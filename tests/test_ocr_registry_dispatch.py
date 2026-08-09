@@ -36,15 +36,13 @@ def fake_backends(monkeypatch):
 def test_ocr_engine_picks_ja_backend_for_japanese(fake_backends):
     engine = OcrEngine(Config(source_lang="ja"))
     assert fake_backends["backend"] == "ja"
-    assert engine._mocr is not None
-    assert engine._easy is None
+    assert engine._recognizer is not None
 
 
 def test_ocr_engine_picks_other_backend_for_english(fake_backends):
     engine = OcrEngine(Config(source_lang="en"))
     assert fake_backends["backend"] == "other"
-    assert engine._easy is not None
-    assert engine._mocr is None
+    assert engine._recognizer is not None
 
 
 def test_ocr_engine_unsupported_language_raises_input_error(monkeypatch):
@@ -56,14 +54,35 @@ def test_ocr_engine_unsupported_language_raises_input_error(monkeypatch):
 
 
 def test_ocr_engine_wraps_import_error_as_model_error(monkeypatch):
-    """非日文分支的 ImportError 要被包成 ModelError，带装好 easyocr 的指引。"""
+    """兜底层：第三方后端自己的工厂没把依赖缺失转成 ModelError 时，OcrEngine 统一转一次。
+    自带的 easyocr 后端已在 registry._other_factory 里自行翻译成人话，不会走到这里。
+    """
 
     def boom_factory(cfg):
-        raise ImportError("no module named easyocr")
+        raise ImportError("no module named xyz")
 
     fake_registry = {
         "ocr_other": registry_mod.OcrBackendEntry("ocr_other", frozenset({"en"}), boom_factory),
     }
     monkeypatch.setattr(registry_mod, "OCR_REGISTRY", fake_registry)
-    with pytest.raises(ModelError, match="easyocr"):
+    with pytest.raises(ModelError, match="OCR 后端加载失败"):
         OcrEngine(Config(source_lang="en"))
+
+
+def test_other_factory_raises_model_error_with_install_guidance(monkeypatch):
+    """easyocr 缺失时，registry._other_factory 自己给出安装指引（人话），
+    而不是让裸 ImportError 一路炸到 UI。用假的 __import__ 模拟 easyocr 不可导入。"""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "easyocr":
+            raise ImportError("No module named 'easyocr'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    entry = registry_mod._build_ocr_registry()["ocr_other"]
+    with pytest.raises(ModelError, match="easyocr"):
+        entry.factory(Config(source_lang="en"))

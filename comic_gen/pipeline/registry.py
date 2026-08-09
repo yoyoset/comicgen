@@ -22,9 +22,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 from ..core.config import Config
+from ..core.errors import ModelError
 
 if TYPE_CHECKING:
     from .translate import BaseTranslator
+    from ..core.contracts import OcrBackend
 
 
 @dataclass(frozen=True)
@@ -40,7 +42,7 @@ class TranslatorEntry:
 class OcrBackendEntry:
     key: str  # core.manifest 里的键
     languages: frozenset[str]  # 支持的 source_lang 集合
-    factory: Callable[[Config], object]  # 返回满足 core.contracts.OcrBackend 的对象
+    factory: Callable[[Config], "OcrBackend"]  # 返回满足 core.contracts.OcrBackend 的对象
 
 
 def _build_translator_registry() -> dict[str, TranslatorEntry]:
@@ -106,19 +108,29 @@ def _build_ocr_registry() -> dict[str, OcrBackendEntry]:
         # 设置页写着"推理设备：CPU"，实际这个模型仍然悄悄用了 GPU。四个模型里
         # 只认 cfg.device 的原来只有 detect/inpaint 两个，manga-ocr/EasyOCR/llama.cpp
         # 这三个各自忽略或硬编码，是审计里明确点出的问题。
-        want_gpu = _wants_gpu(cfg)
-        model_dir = cfg.model_paths.get("ocr_ja")
-        kwargs = {"force_cpu": not want_gpu}
-        if model_dir:
-            kwargs["pretrained_model_name_or_path"] = model_dir
+        kwargs: dict[str, object] = {"force_cpu": not _wants_gpu(cfg)}
+        if cfg.model_paths.get("ocr_ja"):
+            kwargs["pretrained_model_name_or_path"] = cfg.model_paths["ocr_ja"]
         return MangaOcr(**kwargs)
 
     def _other_factory(cfg: Config):
-        import easyocr
+        # easyocr 是可选依赖（非日文才需要）。缺失/构造失败在这里直接给出安装指引
+        # （ModelError，人话层），而不是让裸 ImportError 一路炸到 UI——OcrEngine 的
+        # 通用 ImportError 兜底只防第三方后端没有自己转异常的情况。
+        from .ocr import EasyOcrBackend
 
-        code = {"en": ["en"], "zh": ["ch_sim", "en"]}.get(cfg.source_lang, ["en"])
-        storage_dir = cfg.model_paths.get("ocr_other")
-        return easyocr.Reader(code, gpu=_wants_gpu(cfg), model_storage_directory=storage_dir)
+        try:
+            import easyocr
+
+            code = {"en": ["en"], "zh": ["ch_sim", "en"]}.get(cfg.source_lang, ["en"])
+            storage_dir = cfg.model_paths.get("ocr_other")
+            reader = easyocr.Reader(code, gpu=_wants_gpu(cfg), model_storage_directory=storage_dir)
+        except ImportError as e:
+            raise ModelError(
+                "非日文 OCR 需要 easyocr，请运行: .\\.venv\\Scripts\\python.exe -m pip install easyocr",
+                technical=str(e),
+            ) from e
+        return EasyOcrBackend(reader)
 
     return {
         "ocr_ja": OcrBackendEntry("ocr_ja", frozenset({"ja"}), _ja_factory),

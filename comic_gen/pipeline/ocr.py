@@ -27,6 +27,22 @@ def assemble_easyocr_text(results, min_conf: float = EASYOCR_MIN_CONF) -> str:
     return " ".join(text for _, text, _ in kept).strip()
 
 
+class EasyOcrBackend:
+    """把 easyocr.Reader.readtext 适配成与 manga-ocr 一致的接口：输入裁剪图、输出文字。
+
+    有了这层适配，OcrEngine 不再需要按后端身份分支（旧代码 `if self._mocr is not None`）
+    ——两个后端都是"可调用对象"，加第三个后端也只是在 registry 里加一条 factory。
+    """
+
+    def __init__(self, reader):
+        self._reader = reader
+
+    def __call__(self, crop: Image.Image) -> str:
+        import numpy as np
+
+        return assemble_easyocr_text(self._reader.readtext(np.array(crop)))
+
+
 class OcrEngine:
     def __init__(self, cfg: Config):
         # 用哪个后端由 registry.OCR_REGISTRY 的 languages 集合决定，不再是这里手写
@@ -39,18 +55,13 @@ class OcrEngine:
         if entry is None:
             raise InputError(f"不支持的源语言：{self.lang}")
 
-        if entry.key == "ocr_ja":
-            self._mocr = entry.factory(cfg)
-            self._easy = None
-        else:
-            try:
-                self._easy = entry.factory(cfg)
-            except ImportError as e:
-                raise ModelError(
-                    "非日文 OCR 需要 easyocr，请运行: .\\.venv\\Scripts\\python.exe -m pip install easyocr",
-                    technical=str(e),
-                ) from e
-            self._mocr = None
+        try:
+            self._recognizer = entry.factory(cfg)
+        except ImportError as e:
+            # 兜底：第三方后端自己的工厂没把依赖缺失转成 ModelError 时，统一转一次，
+            # 不能把"缺依赖"伪装成"流水线崩溃"糊给用户。自带后端的错误已由各工厂
+            # 自行翻译成人话（如 easyocr 的安装指引），不会走到这里。
+            raise ModelError(f"OCR 后端加载失败：{e}", technical=str(e)) from e
 
     def recognize_regions(self, image: Image.Image, regions: list[Region], pad: int = 6):
         w, h = image.size
@@ -60,11 +71,7 @@ class OcrEngine:
                 (max(0, x - pad), max(0, y - pad), min(w, x + bw + pad), min(h, y + bh + pad))
             )
             try:
-                if self._mocr is not None:
-                    r.source_text = self._mocr(crop).strip()
-                else:
-                    res = self._easy.readtext(np.array(crop))
-                    r.source_text = assemble_easyocr_text(res)
+                r.source_text = self._recognizer(crop).strip()
             except Exception as e:
                 logger.warning("OCR 区域异常 bbox=%s: %s", r.bbox, e)
                 r.source_text = ""

@@ -26,7 +26,16 @@ class Detector(Protocol):
 
 
 class OcrBackend(Protocol):
-    def recognize_regions(self, image: Image.Image, regions: list[Region]) -> None: ...
+    """单个裁剪块（气泡/文本框）的识别器：输入 PIL 裁剪图，返回识别出的文字。
+
+    之前这个 Protocol 声明的是 `recognize_regions(image, regions)`——但两个真实后端
+    （manga-ocr 的 __call__、EasyOCR 的 readtext）都是"逐裁剪块识别"的形状，没有任何
+    实现符合旧声明，ocr.py 只能靠 `_mocr is not None` 分支硬编码分发。现在描述真实
+    接口：manga-ocr 本身就可调用；EasyOCR 在 registry.py 里用适配器包装成同样形状。
+    加新后端只要让工厂返回一个满足它的对象，OcrEngine 无需感知后端身份。
+    """
+
+    def __call__(self, crop: Image.Image) -> str: ...
 
 
 class Translator(Protocol):
