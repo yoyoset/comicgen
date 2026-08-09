@@ -164,5 +164,7 @@ class ComicDetector:
                 Region(bbox=[x1, y1, bw, bh], direction=direction, kind=kind, score=float(score))
             )
         regions = filter_region_quality(suppress_overlaps(regions))
-        regions.sort(key=lambda r: (r.bbox[1], r.bbox[0]))
+        # 不在这里排序：唯一的调用方（runner._detect_page）会用 reading_order 按
+        # 阅读顺序重排（rtl 时还和这里的固定 (y, x) 顺序相反），这里的排序是纯粹的
+        # 死工作，还会造成"detect 已经排过序"的错觉。排序职责只属于 reading_order。
         return regions

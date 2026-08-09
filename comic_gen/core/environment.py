@@ -68,12 +68,6 @@ class EnvReport:
     def unrar_available(self) -> bool:
         return self.unrar_path is not None
 
-    @property
-    def ready_for_offline_run(self) -> bool:
-        """检测+OCR(日文)+抹字是最小可跑集合；Sakura/通用LLM 按需。"""
-        required = ("detect", "ocr_ja", "lama")
-        return all(self.models_cached.get(k, False) for k in required)
-
 
 def enable_offline_mode() -> None:
     """所需模型都已在本地时，关掉 HuggingFace 的联网校验。
