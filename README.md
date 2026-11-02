@@ -168,3 +168,9 @@ GPU 加速需 CUDA 12.4 运行时（安装 CUDA Toolkit 12.4 或确保 `cudart64
 抹字 LaMa · 翻译本地 Sakura/通用 LLM（均为 GGUF，走 llama.cpp）· 界面 PySide6 / PyInstaller EXE
 
 方案文档见 [docs/PROPOSAL.md](docs/PROPOSAL.md)。
+
+## 赞助
+
+如果这个项目帮你省了时间，欢迎赞助一点 Token（算力）。你的支持会直接变成下一轮的推理与测试成本，让它持续维护。
+
+<table><tr><td align="center"><img src="docs/donate/donate_alipay.png" width="160" alt="支付宝"><br>支付宝</td><td align="center"><img src="docs/donate/donate_wechat.png" width="160" alt="微信支付"><br>微信支付</td><td align="center"><img src="docs/donate/donate_paypal.png" width="160" alt="PayPal"><br>PayPal</td></tr></table>
