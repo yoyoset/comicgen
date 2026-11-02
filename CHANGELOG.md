@@ -3,6 +3,21 @@
 项目阶段成果记录。2026-08 之前的变更以 git 提交历史为准（提交信息即当时的记录）；
 之后按节记录每个阶段做了什么、关键依据、遗留事项。
 
+## 2026-11-02 — 0.3.0:日译中默认换 Sakura-14B + 产品化第一步
+
+**做了什么**：`sakura` 模型由 Sakura-7B-Qwen2.5-v1.0 换成 Sakura-14B-Qwen3-v1.5（iq4xs，8_180_361_440 字节，
+字节数仍严格校验）；补 MIT `LICENSE` 与 `THIRD_PARTY_NOTICES.md`；README 增加「许可」「硬件要求」；版本 0.2.0 → 0.3.0。
+
+**依据**：RTX 3060 上 16 句日语台词、同提示词对比——7B 把单数「おい、何してんだ」译成"你们"，批量 16 句只回 14 行
+（对不上号）；14B 译对且 16/16 对齐。样本很小，只作方向性证据。源码 CLI 跑两页日文测试页，检测→OCR→翻译→抹字→渲染
+全流程完成，显存峰值 12014/12288 MiB。
+
+**遗留 / 未验证**：
+- **EXE 未重新打包**（现有 EXE 仍用 7B）。打包前先删 `dist\comicgen\settings.json` 里 `model_files.sakura` 的旧绑定。
+- **PyMuPDF（AGPL）与 MIT 的张力未解决**，见 THIRD_PARTY_NOTICES.md；发布 EXE 前必须决定。
+- 还没有 CI；没有发布流程（tag / Release）；没有在干净环境验证 `pip install` 安装路径。
+- Sakura-14B 为非商用许可。
+
 ## 2026-08-25 — 批量队列补上「暂停」+ BatchController 暴露 state
 
 单任务已有暂停（释放显存/继续）；批量页这次补上同一能力：`BatchController` 增加

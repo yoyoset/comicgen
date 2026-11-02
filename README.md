@@ -149,6 +149,17 @@ GPU 加速需 CUDA 12.4 运行时（安装 CUDA Toolkit 12.4 或确保 `cudart64
   settings.json` 里的 `model_files` 有旧绑定，重新打包后会报「文件大小异常」，需要手动清掉
   那条绑定（或改「定位…」到新文件）才会回落去按 manifest 里的新文件名重新搜索/下载。
 
+## 许可
+
+本项目代码 MIT，见 [LICENSE](LICENSE)。**默认日译中模型 Sakura-14B 是 CC BY-NC-SA 4.0（非商用）**，
+第三方模型与依赖的完整许可（含 PyMuPDF 为 AGPL 的注意事项）见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 硬件要求（实测）
+
+默认配置（Sakura-14B iq4xs ≈ 8.2GB）在 RTX 3060 12GB 上跑完整流程，显存峰值约 12.0GB（含桌面占用约 2GB），
+**余量很小**；同时开着别的吃显存的程序可能显存不足。显存更小的卡请把翻译引擎换成更小的模型（「模型管理」页），
+或在设置里选 CPU（慢很多）。
+
 ## 技术栈
 
 检测 RT-DETRv2（ogkalu/comic-text-and-bubble-detector，Apache-2.0）· OCR manga-ocr/EasyOCR ·
