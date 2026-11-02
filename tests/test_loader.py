@@ -7,7 +7,13 @@ import pytest
 from PIL import Image
 
 from comic_gen.core.errors import InputError
-from comic_gen.pipeline.loader import LoadedInput, load_input, pack_output
+from comic_gen.pipeline.loader import (
+    LoadedInput,
+    downscaled_size,
+    load_input,
+    pack_output,
+    target_long_edge_px,
+)
 
 
 def create_test_images(tmpdir: Path, count: int = 2):
@@ -315,3 +321,110 @@ def test_pack_output_epub_falls_back_to_original_without_self_copy_error():
             names = zf.namelist()
             assert "page_001.png" in names
             assert "page_002.png" in names
+
+
+# ---------------------------------------------------------------- 按 dpi 降采样超大图片
+
+
+def test_target_long_edge_px_at_150dpi():
+    # B5 参考开本长边 10.1 英寸 × 150dpi = 1515px（四舍五入）
+    assert target_long_edge_px(150) == 1515
+
+
+def test_target_long_edge_px_at_300dpi():
+    assert target_long_edge_px(300) == 3030
+
+
+def test_downscaled_size_returns_none_when_within_target():
+    """已经不超过目标长边的图不处理——不放大小图。"""
+    assert downscaled_size(800, 1200, target_long_edge=1515) is None
+    assert downscaled_size(1200, 1515, target_long_edge=1515) is None  # 恰好等于也不处理
+
+
+def test_downscaled_size_shrinks_oversized_preserving_aspect_ratio():
+    new_w, new_h = downscaled_size(4535, 6307, target_long_edge=1515)
+    assert new_h == 1515  # 长边（这里是高）缩到目标
+    # 宽高比误差控制在四舍五入范围内
+    assert abs(new_w / new_h - 4535 / 6307) < 0.001
+
+
+def test_load_input_folder_downscales_oversized_image(tmp_path):
+    """真实踩过的坑（2026-08-22）：一本同人志原图长边 6307px，LaMa 抹字实测约
+    4.4 分钟/页。load_input 对图片输入按 cfg.pdf_dpi 换算的参考开本长边做降采样，
+    默认 150dpi 下超过 1515px 长边的图会被等比缩小。
+    """
+    src_dir = tmp_path / "book"
+    src_dir.mkdir()
+    big = Image.new("RGB", (4535, 6307), color=(255, 255, 255))
+    big.save(src_dir / "01.jpg", quality=95)
+
+    loaded = load_input(src_dir, tmp_path / "_extract")
+
+    assert len(loaded.pages) == 1
+    with Image.open(loaded.pages[0]) as im:
+        assert max(im.size) <= 1515
+        assert abs(im.size[0] / im.size[1] - 4535 / 6307) < 0.001
+    # 原图必须原样保留，不能被就地覆盖——回退路径/用户原始数据不该被这一步改动。
+    with Image.open(src_dir / "01.jpg") as orig:
+        assert orig.size == (4535, 6307)
+
+
+def test_load_input_folder_leaves_normal_size_images_untouched(tmp_path):
+    """没超过目标长边的图不应该被复制/重新编码——直接复用原路径，省 IO。"""
+    src_dir = tmp_path / "book"
+    src_dir.mkdir()
+    small = Image.new("RGB", (800, 1200), color=(255, 255, 255))
+    small.save(src_dir / "01.png")
+
+    loaded = load_input(src_dir, tmp_path / "_extract")
+
+    assert loaded.pages == [src_dir / "01.png"]  # 原路径，不是复制/缩放后的路径
+
+
+def test_load_input_folder_downscale_avoids_filename_collision_across_subfolders(tmp_path):
+    """真实场景：漫画按分卷子文件夹组织，不同子卷可能撞同名文件（"01.jpg"）。
+    降采样落盘必须按相对路径建目录结构，不能只用 basename，否则会互相覆盖。
+    """
+    src_dir = tmp_path / "book"
+    (src_dir / "vol1").mkdir(parents=True)
+    (src_dir / "vol2").mkdir(parents=True)
+    Image.new("RGB", (4535, 6307), color=(255, 0, 0)).save(src_dir / "vol1" / "01.jpg", quality=95)
+    Image.new("RGB", (4535, 6307), color=(0, 0, 255)).save(src_dir / "vol2" / "01.jpg", quality=95)
+
+    loaded = load_input(src_dir, tmp_path / "_extract")
+
+    assert len(loaded.pages) == 2
+    assert len({p.resolve() for p in loaded.pages}) == 2  # 两个不同的落盘路径，没有互相覆盖
+    # JPEG 有损压缩会让像素值有 ±1~2 的漂移（quality=95 下实测确认过），不能按精确值
+    # 比对；只验证"哪张红哪张蓝"没有串——真正要防的是文件名碰撞导致互相覆盖。
+    colors = [Image.open(p).convert("RGB").getpixel((0, 0)) for p in loaded.pages]
+    reds = [c for c in colors if c[0] > 200 and c[2] < 50]
+    blues = [c for c in colors if c[2] > 200 and c[0] < 50]
+    assert len(reds) == 1 and len(blues) == 1
+
+
+def test_load_input_pdf_is_not_downscaled_again(tmp_path, monkeypatch):
+    """PDF 已经按 dpi 从矢量渲染，物理尺寸精确已知，不该再套图片输入的那层
+    "参考开本估算"降采样——用一个假的 _load_pdf 验证 load_input 对 pdf 分支直接
+    return，不会把结果再传进 _downscale_oversized_images。
+    """
+    import comic_gen.pipeline.loader as loader_mod
+
+    calls = []
+    fake_loaded = LoadedInput(
+        kind="pdf", input_path=tmp_path / "in.pdf", work_dir=tmp_path,
+        rel_names=["page_0001.png"], pages=[tmp_path / "page_0001.png"],
+    )
+
+    def fake_load_pdf(p, out, dpi, load_cb):
+        calls.append(dpi)
+        return fake_loaded
+
+    monkeypatch.setattr(loader_mod, "_load_pdf", fake_load_pdf)
+    pdf_path = tmp_path / "in.pdf"
+    pdf_path.write_bytes(b"fake")
+
+    result = load_input(pdf_path, tmp_path / "_extract")
+
+    assert result is fake_loaded  # 原样返回，没有被 _downscale_oversized_images 处理过
+    assert calls == [150]

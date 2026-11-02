@@ -25,4 +25,12 @@ class Config:
     max_font_size: int = 48
     # ---- 运行 ----
     device: str = "cuda"
-    pdf_dpi: int = 150  # PDF 输入时每页渲染 DPI（150 快且够用，300 画质好但慢）
+    # 全局 DPI：PDF 输入时按此渲染每页；图片输入（文件夹/ZIP/CBZ/RAR/CBR/EPUB）没有
+    # 可靠的物理尺寸信息，用它换算出参考开本（B5）长边对应的像素数，长边超过这个数的图
+    # 会先等比缩小再进流水线（见 pipeline/loader.py::target_long_edge_px），避免原始
+    # 扫描图分辨率过高时 LaMa 抹字/渲染耗时爆炸（2026-08-22 实测：6307px 长边约
+    # 4.4 分钟/页）。150 快且够用，300 画质好但慢，两种输入都受这一个值控制。
+    pdf_dpi: int = 150
+    # 任务完整成功后删除中间产物（translated/、解包原图、pages.json/job.json/run.log），
+    # 只保留最终交付物，释放磁盘空间。勾选后该任务无法再校对/断点续跑/跨会话重渲染。
+    cleanup_intermediate: bool = False

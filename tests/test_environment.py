@@ -7,7 +7,12 @@
 import pytest
 
 from comic_gen.core import model_locator
-from comic_gen.core.environment import detect_environment, find_model_path, is_model_cached
+from comic_gen.core.environment import (
+    EnvReport,
+    detect_environment,
+    find_model_path,
+    is_model_cached,
+)
 from comic_gen.core.manifest import MODEL_MANIFEST
 
 
@@ -100,3 +105,22 @@ def test_offline_mode_roundtrip(monkeypatch):
     restore_offline_mode()
     assert os.environ.get("HF_HUB_OFFLINE") is None
     assert os.environ.get("TRANSFORMERS_OFFLINE") is None
+
+
+def test_ready_for_offline_run_false_when_minimum_set_missing():
+    """最小可跑集合（detect+ocr_ja+lama）缺任何一个，ready_for_offline_run 都应为 False。"""
+    report = EnvReport(models_cached={"detect": True, "ocr_ja": True})  # 缺 lama
+    assert report.ready_for_offline_run is False
+
+
+def test_ready_for_offline_run_true_when_minimum_set_cached():
+    report = EnvReport(models_cached={"detect": True, "ocr_ja": True, "lama": True})
+    assert report.ready_for_offline_run is True
+
+
+def test_ready_for_offline_run_true_regardless_of_optional_llm():
+    """Sakura/通用LLM 是按需模型，不在最小集合里——没有它们不影响判定（否则诊断页
+    会在只做日文任务、还没下 LLM 时误报"缺少最小集合"）。"""
+    report = EnvReport(models_cached={"detect": True, "ocr_ja": True, "lama": True,
+                                      "sakura": False, "llm": False})
+    assert report.ready_for_offline_run is True

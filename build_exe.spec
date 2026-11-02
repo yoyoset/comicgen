@@ -26,13 +26,17 @@ for pkg in COLLECT_ALL_PACKAGES:
     hiddenimports += h
 
 # transformers 懒加载模型族必须显式声明
+# 注意：detect 的 image_processor_type=RTDetrImageProcessor（rt_detr 无 v2）——transformers
+# 5.14.1 里 rt_detr_v2.image_processing_rt_detr_v2 已删除，AutoImageProcessor 实际解析到
+# rt_detr.image_processing_rt_detr（实测 from_pretrained 验证）。曾把 v2 那条写进这里，
+# 每次 build 报 "hidden import not found" 误导排查，已按实测模块名修正。
 hiddenimports += [
     "PySide6.QtCore",
     "PySide6.QtGui",
     "PySide6.QtWidgets",
     "transformers.models.auto.image_processing_auto",
     "transformers.models.rt_detr_v2.modeling_rt_detr_v2",
-    "transformers.models.rt_detr_v2.image_processing_rt_detr_v2",
+    "transformers.models.rt_detr.image_processing_rt_detr",
     "transformers.models.rt_detr_v2.configuration_rt_detr_v2",
     "transformers.models.trocr.modeling_trocr",
     "transformers.models.trocr.configuration_trocr",

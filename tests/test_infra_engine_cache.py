@@ -59,3 +59,28 @@ def test_independent_caches_do_not_interfere():
     b_cache.get_or_rebuild("x", lambda: b_calls.append(1) or object())
     assert len(a_calls) == 1
     assert len(b_calls) == 1
+
+
+def test_clear_forces_rebuild_even_with_same_signature():
+    """暂停释放显存走的路径：clear() 后即使签名不变，下一次 get_or_rebuild 也必须重建。"""
+    cache = EngineCache()
+    calls = []
+
+    def factory():
+        calls.append(1)
+        return object()
+
+    a = cache.get_or_rebuild("sig-a", factory)
+    cache.clear()
+    b = cache.get_or_rebuild("sig-a", factory)
+    assert a is not b
+    assert len(calls) == 2
+
+
+def test_clear_is_idempotent():
+    cache = EngineCache()
+    calls = []
+    cache.clear()  # 从未构建过也能安全清
+    cache.clear()
+    assert cache.get_or_rebuild("x", lambda: calls.append(1) or object()) is not None
+    assert len(calls) == 1

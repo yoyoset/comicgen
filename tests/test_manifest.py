@@ -3,10 +3,13 @@ from comic_gen.core.manifest import LAYOUT_DIR, LAYOUT_FILE, MODEL_MANIFEST
 
 EXPECTED_KEYS = {"detect", "ocr_ja", "ocr_other", "sakura", "llm", "lama"}
 
-# 已实测核实的精确字节数，见 offline-and-model-sharing 项目 memory
+# 已实测核实的精确字节数，见 offline-and-model-sharing 项目 memory。
+# "llm" 故意不在这里——2026-08-22 起 size_bytes 对它设成 0（见 manifest.py 的字段注释），
+# 因为这个 key 允许用户绑定任意通用指令 GGUF 模型替换默认下载项，不应该拿某一个具体
+# 模型（当前默认是 Qwen3-14B）的字节数去卡死绑定校验；sakura/lama 是特定模型，
+# 换了权重结构不兼容会直接崩，必须继续严格比对。
 EXPECTED_SIZES = {
-    "sakura": 4_250_298_208,
-    "llm": 2_497_281_120,
+    "sakura": 8_180_361_440,
     "lama": 205_803_670,
 }
 
@@ -25,9 +28,22 @@ def test_layout_file_specs_have_required_fields():
         if spec.layout != LAYOUT_FILE:
             continue
         assert spec.filename, f"{key}: LAYOUT_FILE 必须有 filename"
-        assert spec.size_bytes > 0, f"{key}: LAYOUT_FILE 必须有精确 size_bytes"
         assert spec.magic, f"{key}: LAYOUT_FILE 必须有 magic"
         assert spec.ext_filter, f"{key}: LAYOUT_FILE 必须有 ext_filter"
+
+
+def test_size_bytes_is_zero_only_for_keys_allowed_to_be_swapped():
+    """size_bytes=0 是"故意不卡绑定大小"的信号，不是漏填——只有明确允许用户自由换成
+    其它同类模型的 key（目前只有 llm）才能是 0，其余（sakura/lama 这类权重结构绑死、
+    换了会直接崩的特定模型）必须保留精确 size_bytes，防止以后手滑清空。"""
+    allowed_zero = {"llm"}
+    for key, spec in MODEL_MANIFEST.items():
+        if spec.layout != LAYOUT_FILE:
+            continue
+        if key in allowed_zero:
+            assert spec.size_bytes == 0, f"{key}: 预期 size_bytes=0（允许自由换绑），实际不是"
+        else:
+            assert spec.size_bytes > 0, f"{key}: 必须有精确 size_bytes（不在允许自由换绑的名单里）"
 
 
 def test_layout_dir_specs_have_member_files():

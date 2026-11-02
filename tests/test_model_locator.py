@@ -134,7 +134,7 @@ def test_cache_drops_stale_path_and_rescans(hf_root, monkeypatch):
 def test_resolve_status_missing_when_cached_file_deleted(hf_root, monkeypatch):
     """缓存的命中路径失效后 resolve_status 按"未安装"返回，而不是 stat 崩溃。"""
     from dataclasses import replace
-    f = hf_root / "sakura-7b-qwen2.5-v1.0-iq4xs.gguf"
+    f = hf_root / "sakura-14b-qwen3-v1.5-iq4xs.gguf"
     f.write_bytes(b"x" * 10)
     patched = dict(model_locator.MODEL_MANIFEST)
     patched["sakura"] = replace(patched["sakura"], size_bytes=10)
@@ -195,7 +195,7 @@ def test_is_ready_property():
 def test_resolve_status_file_ready_via_search(hf_root, monkeypatch):
     """未绑定时按 manifest 声明的文件名在搜索根里找，找到且大小吻合就是 ready。"""
     from dataclasses import replace
-    f = hf_root / "sakura-7b-qwen2.5-v1.0-iq4xs.gguf"
+    f = hf_root / "sakura-14b-qwen3-v1.5-iq4xs.gguf"
     f.write_bytes(b"x" * 10)
     patched = dict(model_locator.MODEL_MANIFEST)
     patched["sakura"] = replace(patched["sakura"], size_bytes=10)
@@ -207,7 +207,7 @@ def test_resolve_status_file_ready_via_search(hf_root, monkeypatch):
 
 def test_resolve_status_binding_overrides_search(hf_root, tmp_path):
     """有显式绑定时必须用绑定的文件，即使搜索能找到别的同名文件也不能用那个。"""
-    (hf_root / "sakura-7b-qwen2.5-v1.0-iq4xs.gguf").write_bytes(b"wrong one")
+    (hf_root / "sakura-14b-qwen3-v1.5-iq4xs.gguf").write_bytes(b"wrong one")
     bound_file = tmp_path / "my_sakura.gguf"
     bound_file.write_bytes(b"correct")
     st = resolve_status("sakura", bindings={"sakura": str(bound_file)})
@@ -216,7 +216,7 @@ def test_resolve_status_binding_overrides_search(hf_root, tmp_path):
 
 def test_resolve_status_binding_path_broken_does_not_fallback(hf_root, tmp_path):
     """绑定指向的文件不存在时必须报 path_broken，绝不能静默回落去搜别的同名文件顶替。"""
-    (hf_root / "sakura-7b-qwen2.5-v1.0-iq4xs.gguf").write_bytes(b"decoy")
+    (hf_root / "sakura-14b-qwen3-v1.5-iq4xs.gguf").write_bytes(b"decoy")
     gone = tmp_path / "gone.gguf"
     st = resolve_status("sakura", bindings={"sakura": str(gone)})
     assert st.state == STATUS_PATH_BROKEN
@@ -268,11 +268,11 @@ def test_status_text_path_broken_wording():
 
 
 def test_find_duplicates_returns_all_copies(hf_root):
-    flat = hf_root / "sakura-7b-qwen2.5-v1.0-iq4xs.gguf"
+    flat = hf_root / "sakura-14b-qwen3-v1.5-iq4xs.gguf"
     flat.write_bytes(b"x")
     snap = hf_root / "hub" / "models--a--b" / "snapshots" / "s1"
     snap.mkdir(parents=True)
-    (snap / "sakura-7b-qwen2.5-v1.0-iq4xs.gguf").write_bytes(b"x")
+    (snap / "sakura-14b-qwen3-v1.5-iq4xs.gguf").write_bytes(b"x")
     dups = find_duplicates("sakura")
     assert len(dups) == 2
 
@@ -350,3 +350,13 @@ def test_validate_candidate_dir_layout_checks_members(tmp_path):
 
 def test_validate_candidate_rejects_missing_path(tmp_path):
     assert validate_candidate("llm", str(tmp_path / "nope.gguf")) is not None
+
+
+def test_validate_candidate_llm_accepts_any_size_gguf(tmp_path):
+    """"llm" 这个 key 的 size_bytes 故意是 0（见 manifest.py 注释）——允许用户自由绑定
+    任意通用指令 GGUF 模型替换默认下载项，不该像 sakura/lama 那样卡死某个具体模型的
+    字节数。用真实 MODEL_MANIFEST（不 monkeypatch），随便造一个跟当前默认模型大小
+    完全不同的小文件，只要 magic 头对就该放行。"""
+    f = tmp_path / "some_other_model.gguf"
+    f.write_bytes(b"GGUF" + b"\x00" * 100)  # 远小于当前默认 Qwen3-14B 的真实体积
+    assert validate_candidate("llm", str(f)) is None

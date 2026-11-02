@@ -43,3 +43,10 @@ def test_to_config_carries_render_preferences():
     assert cfg.max_font_size == 60
     assert cfg.det_threshold == 0.5
     assert cfg.device == "cpu"
+
+
+def test_to_config_carries_cleanup_intermediate():
+    s = AppSettings(cleanup_intermediate=True)
+    cfg = s.to_config(_request())
+    assert cfg.cleanup_intermediate is True
+    assert AppSettings().to_config(_request()).cleanup_intermediate is False

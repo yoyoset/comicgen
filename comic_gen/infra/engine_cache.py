@@ -27,3 +27,9 @@ class EngineCache(Generic[T]):
             self._value = factory()
             self._sig = sig
         return self._value
+
+    def clear(self) -> None:
+        """丢弃缓存值并清空签名。调用方负责先对旧值做资源清理（如释放显存）——
+        这里只管"下一次 get_or_rebuild 必然重建"这一条契约。"""
+        self._value = None
+        self._sig = None

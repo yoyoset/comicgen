@@ -62,14 +62,18 @@ class BatchView(QtWidgets.QWidget):
     clearFinishedRequested = QtCore.Signal()
     startRequested = QtCore.Signal()
     stopRequested = QtCore.Signal()
+    pauseRequested = QtCore.Signal()
+    resumeRequested = QtCore.Signal()
     openOutputRequested = QtCore.Signal(object)  # BatchJob（选中行）
     reviewRequested = QtCore.Signal(object)      # BatchJob（选中行）
+    cleanupToggled = QtCore.Signal(bool)         # 完成后清理中间产物选项变化
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._jobs: list[BatchJob] = []
         self._batch_running = False   # 本队列自己是否正在执行
         self._blocked = False         # 单任务正在跑，队列入口整体不可用
+        self._pause_mode = "disabled"  # running | requested | paused | disabled
         self._last_browse_dir = ""
         self._build()
 
@@ -101,6 +105,12 @@ class BatchView(QtWidgets.QWidget):
         self.engine_hint = QtWidgets.QLabel("")
         self.engine_hint.setStyleSheet("color: gray;")
         sel_lay.addWidget(self.engine_hint)
+        self.cleanup_check = QtWidgets.QCheckBox("完成后清理中间产物，仅保留最终成品")
+        self.cleanup_check.setToolTip(
+            "任务完整成功后退删除译图、解包原图与断点/日志等中间文件，只留最终交付物。\n"
+            "勾选后该任务将无法再校对、断点续跑或跨会话重渲染。")
+        self.cleanup_check.toggled.connect(self.cleanupToggled)
+        sel_lay.addWidget(self.cleanup_check)
         sel_lay.addStretch(1)
         root.addWidget(sel)
         self._recommend_engine()
@@ -109,9 +119,11 @@ class BatchView(QtWidgets.QWidget):
         btns = QtWidgets.QHBoxLayout()
         btns.setSpacing(6)
         self.add_files_btn = QtWidgets.QPushButton("添加文件…")
+        self.add_files_btn.setToolTip("一次可多选多个漫画文件（Ctrl/Shift）")
         self.add_files_btn.clicked.connect(self.addFilesRequested)
         btns.addWidget(self.add_files_btn)
         self.add_folder_btn = QtWidgets.QPushButton("添加文件夹…")
+        self.add_folder_btn.setToolTip("一次可多选多个文件夹（Ctrl/Shift）")
         self.add_folder_btn.clicked.connect(self.addFolderRequested)
         btns.addWidget(self.add_folder_btn)
         btns.addSpacing(12)
@@ -128,6 +140,11 @@ class BatchView(QtWidgets.QWidget):
         self.start_btn.setToolTip("顺序跑完队列里的任务；失败/取消的任务会从断点继续重跑")
         self.start_btn.clicked.connect(self.startRequested)
         btns.addWidget(self.start_btn)
+        self.pause_btn = QtWidgets.QPushButton("暂停")
+        self.pause_btn.setToolTip("暂停当前任务（下一页开始前生效）并释放显卡，之后可继续同一队列")
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.clicked.connect(self._on_pause_clicked)
+        btns.addWidget(self.pause_btn)
         self.stop_btn = QtWidgets.QPushButton("停止")
         self.stop_btn.setToolTip("停止队列：当前任务在页边界停止，之后不再自动推进，排队中的任务保留")
         self.stop_btn.clicked.connect(self.stopRequested)
@@ -199,6 +216,13 @@ class BatchView(QtWidgets.QWidget):
     def set_last_browse_dir(self, d: str):
         self._last_browse_dir = d or ""
 
+    def cleanup_intermediate(self) -> bool:
+        return self.cleanup_check.isChecked()
+
+    def set_cleanup_intermediate(self, checked: bool):
+        """启动/另一页签切换时同步；setChecked 值没变不会重新触发 toggled，无回环。"""
+        self.cleanup_check.setChecked(checked)
+
     def selected_job(self) -> BatchJob | None:
         if not self._jobs:
             return None
@@ -261,6 +285,20 @@ class BatchView(QtWidgets.QWidget):
         self._batch_running = running
         self._refresh_controls()
 
+    def set_pause_state(self, mode: str):
+        """控制暂停按钮四态（由 MainWindow 按队列状态驱动），语义与翻译页一致：
+        running=可点「暂停」；requested=正在暂停；paused=可点「继续」；disabled=不可点。"""
+        if mode not in ("running", "requested", "paused", "disabled"):
+            mode = "disabled"
+        self._pause_mode = mode
+        self._refresh_controls()
+
+    def _on_pause_clicked(self):
+        if self._pause_mode == "paused":
+            self.resumeRequested.emit()
+        else:
+            self.pauseRequested.emit()
+
     def set_blocked(self, blocked: bool):
         """单任务运行中：队列的增删/开始入口整体禁用，避免用户对着灰态按钮以为队列坏了。"""
         self._blocked = blocked
@@ -294,6 +332,15 @@ class BatchView(QtWidgets.QWidget):
         self.clear_finished_btn.setEnabled(can_edit)
         self.start_btn.setEnabled(can_edit)
         self.stop_btn.setEnabled(self._batch_running)
+        if self._pause_mode == "paused":
+            self.pause_btn.setText("继续")
+            self.pause_btn.setEnabled(self._batch_running)
+        elif self._pause_mode == "requested":
+            self.pause_btn.setText("正在暂停…")
+            self.pause_btn.setEnabled(False)
+        else:
+            self.pause_btn.setText("暂停")
+            self.pause_btn.setEnabled(self._batch_running and not self._blocked)
         job = self.selected_job()
         has_selection = job is not None
         self.remove_btn.setEnabled(

@@ -7,8 +7,10 @@ from comic_gen.core.models import Region
 from comic_gen.pipeline.detect import (
     _containment,
     _iou,
+    _vertical_overlap_ratio,
     filter_region_quality,
     reading_order,
+    suppress_duplicate_text_runs,
     suppress_overlaps,
 )
 
@@ -200,3 +202,56 @@ def test_reading_order_explicit_band_overrides_median():
     # band=10 时 y//10 不同，分属不同行
     ordered2 = reading_order([b, a], rtl=False, band=10)
     assert [r.kind for r in ordered2] == ["A", "B"]
+
+
+# ---------------------------------------------------------------- suppress_duplicate_text_runs
+
+
+def test_vertical_overlap_ratio_helper():
+    # 同一竖排文字行的两个窄条：y 范围几乎重合 → 接近 1
+    a = [1088, 1192, 24, 422]
+    b = [1068, 1191, 24, 416]
+    assert _vertical_overlap_ratio(a, b) > 0.9
+    # y 上错开的不同气泡 → 远低于阈值
+    c = [1088, 1192, 24, 422]
+    d = [1088, 1700, 24, 422]
+    assert _vertical_overlap_ratio(c, d) < 0.3
+
+
+def test_duplicate_text_run_collapses_to_one():
+    """实测（167.JPEG）：同一竖排文字被检测成 7 个 y 重合的窄条框，OCR 文本相同。
+    只保留第一个（保持输入顺序，即阅读顺序）。"""
+    boxes = [[1088, 1192, 24, 422], [1068, 1191, 24, 416], [1039, 1193, 22, 410],
+             [1025, 1192, 29, 413], [1008, 1191, 25, 414], [970, 1190, 31, 420],
+             [962, 1191, 27, 417]]
+    regions = [Region(bbox=b, source_text="それでも、", score=0.8 - i * 0.01)
+               for i, b in enumerate(boxes)]
+    kept = suppress_duplicate_text_runs(regions)
+    assert len(kept) == 1
+    assert kept[0].bbox == boxes[0]  # 保留阅读顺序第一个
+
+
+def test_same_text_different_y_band_both_kept():
+    """文字相同但 y 上确实错开的两个气泡（两处重复的台词），不能合并。"""
+    a = Region(bbox=[100, 100, 50, 200], source_text="うん", score=0.8)
+    b = Region(bbox=[100, 800, 50, 200], source_text="うん", score=0.7)
+    kept = suppress_duplicate_text_runs([a, b])
+    assert len(kept) == 2
+
+
+def test_different_text_overlapping_y_both_kept():
+    """y 重合但 OCR 文本不同的框（相邻气泡），不能合并。"""
+    a = Region(bbox=[100, 100, 50, 200], source_text="うん", score=0.8)
+    b = Region(bbox=[200, 100, 50, 200], source_text="なに？", score=0.7)
+    kept = suppress_duplicate_text_runs([a, b])
+    assert len(kept) == 2
+
+
+def test_duplicate_text_run_keeps_reading_order():
+    """输入顺序保持：去重不重排，且只删重复、不动其它区域。"""
+    r1 = Region(bbox=[0, 0, 30, 100], source_text="えっ", score=0.9)
+    r2 = Region(bbox=[10, 0, 30, 100], source_text="えっ", score=0.8)  # 与 r1 重复
+    r3 = Region(bbox=[0, 300, 30, 100], source_text="そうだ", score=0.7)
+    kept = suppress_duplicate_text_runs([r1, r2, r3])
+    assert [k.source_text for k in kept] == ["えっ", "そうだ"]
+    assert kept[0] is r1

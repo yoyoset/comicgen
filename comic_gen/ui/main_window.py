@@ -22,11 +22,18 @@ from ..core.settings import AppSettings
 from ..pipeline.runner import Runner
 from ..pipeline.translate import engine_lang_conflict
 from .batch_controller import BatchController
-from .job_controller import STATE_RUNNING, JobController
+from .job_controller import (
+    STATE_CANCELLING,
+    STATE_PAUSED,
+    STATE_PAUSING,
+    STATE_RUNNING,
+    JobController,
+)
 from .views.batch_view import BatchView
 from .views.diagnostics_view import DiagnosticsView
 from .views.first_run_dialog import FirstRunDialog
 from .views.model_view import ModelView
+from .views.multi_folder_dialog import MultiFolderDialog
 from .views.review_view import ReviewView
 from .views.settings_view import SettingsView
 from .views.translate_view import TranslateView
@@ -124,11 +131,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def _wire_signals(self):
         self.translate_view.startRequested.connect(self._on_start)
         self.translate_view.stopRequested.connect(self.job_controller.cancel)
+        self.translate_view.pauseRequested.connect(self.job_controller.pause)
+        self.translate_view.resumeRequested.connect(self.job_controller.resume)
         self.translate_view.rerenderRequested.connect(self._on_rerender)
         self.translate_view.reviewRequested.connect(self._on_review_open_last)
         self.translate_view.openOutputRequested.connect(self._on_open_output)
 
         self.settings_view.changed.connect(self._on_settings_changed)
+        self.translate_view.cleanupToggled.connect(self._on_cleanup_toggled)
+        self.batch_view.cleanupToggled.connect(self._on_cleanup_toggled)
 
         self.model_view.scanRequested.connect(self._start_scan_worker)
         self.model_view.downloadRequested.connect(lambda k: self._start_model_worker([k], True))
@@ -159,6 +170,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.batch_view.clearFinishedRequested.connect(self._on_batch_clear_finished)
         self.batch_view.startRequested.connect(self._on_batch_start)
         self.batch_view.stopRequested.connect(self.batch_controller.stop)
+        self.batch_view.pauseRequested.connect(self.batch_controller.pause)
+        self.batch_view.resumeRequested.connect(self.batch_controller.resume)
         self.batch_view.openOutputRequested.connect(self._on_batch_open_output)
         self.batch_view.reviewRequested.connect(self._on_batch_review)
 
@@ -175,6 +188,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.model_view.set_current_bindings(self.settings.model_files)
         self.translate_view.set_last_browse_dir(self.settings.last_input_dir)
         self.batch_view.set_last_browse_dir(self.settings.last_input_dir)
+        self.translate_view.set_cleanup_intermediate(self.settings.cleanup_intermediate)
+        self.batch_view.set_cleanup_intermediate(self.settings.cleanup_intermediate)
         apply_model_dir(self.settings.model_dir)
 
     def _restore_window_geometry(self):
@@ -226,7 +241,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "3. 点「开始翻译」——模型没就位会先提示去「模型管理」页补齐，不会白跑\n"
             "4. 完成后在「成品预览」查看，或点「校对本次结果」改译文、改完点「导出全部」重新打包\n\n"
             "每页结果实时落盘：任务中断/失败后，用相同输入输出重新运行即可从断点继续，"
-            "不会重跑已完成的页。",
+            "不会重跑已完成的页。中途想腾出显卡做别的事，点「暂停」会在当前页结束后释放"
+            "显存，之后点「继续」从同一位置接着跑。",
         )
 
     # ------------------------------------------------------------ 设置
@@ -236,6 +252,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.model_view.set_model_dir_label(self.settings.model_dir)
         apply_model_dir(self.settings.model_dir)
         self._start_scan_worker()
+
+    def _on_cleanup_toggled(self, checked: bool):
+        """翻译页/批量页的「完成后清理中间产物」勾选是同一个持久化偏好的两个入口：
+        任一勾选变化立即落盘，并同步另一个页签的勾选，避免两处显示不一致。"""
+        self.settings.cleanup_intermediate = checked
+        self.settings.save()
+        self.translate_view.set_cleanup_intermediate(checked)
+        self.batch_view.set_cleanup_intermediate(checked)
 
     # ------------------------------------------------------------ 翻译
     def _any_job_busy(self) -> bool:
@@ -365,12 +389,28 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "提示", str(e))
 
     def _on_job_state_changed(self, state: str):
-        running = state == STATE_RUNNING or state == "cancelling"
+        # paused/pausing 期间任务线程仍存活，同样算 busy：批量/设置/校对都要被拦，
+        # 否则暂停中的任务继续跑会撞上另一个同时占 GPU 的任务。
+        running = state in (STATE_RUNNING, STATE_PAUSING, STATE_PAUSED, STATE_CANCELLING)
         self.translate_view.set_running(running)
         self.batch_view.set_blocked(running)
         self.settings_view.set_running(running, self._running_settings_summary())
-        text = {"idle": "就绪", "running": "运行中…", "cancelling": "正在停止…"}.get(state, state)
+        text = {
+            "idle": "就绪",
+            "running": "运行中…",
+            "pausing": "正在暂停…",
+            "paused": "已暂停（显卡资源已释放）",
+            "cancelling": "正在停止…",
+        }.get(state, state)
         self.status_lbl.setText(text)
+        if state == STATE_PAUSING:
+            self.translate_view.set_pause_state("requested")
+        elif state == STATE_PAUSED:
+            self.translate_view.set_pause_state("paused")
+        elif state == STATE_RUNNING:
+            self.translate_view.set_pause_state("running")
+        else:
+            self.translate_view.set_pause_state("disabled")
         if state == STATE_RUNNING:
             # 冷启动要加载检测/OCR/翻译/抹字四个模型，可能 30 秒以上——在第一个阶段
             # 进度到达前先明确告诉用户"正在加载模型"，而不是进度条停在 0 毫无说明。
@@ -387,7 +427,8 @@ class MainWindow(QtWidgets.QMainWindow):
             f"· 推理设备：{self.settings.device}\n"
             f"· 翻译引擎：{req.engine}　源语言：{req.source_lang}\n"
             f"· 检测阈值：{self.settings.det_threshold}\n"
-            f"· PDF DPI：{self.settings.pdf_dpi}"
+            f"· 全局 DPI：{self.settings.pdf_dpi}\n"
+            f"· 完成后清理中间产物：{'是' if self.settings.cleanup_intermediate else '否'}"
         )
 
     def _on_job_progress(self, fraction: float, desc: str):
@@ -613,10 +654,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._batch_enqueue(paths, first=paths[0])
 
     def _on_batch_add_folder(self):
-        d = QtWidgets.QFileDialog.getExistingDirectory(self, "添加输入文件夹", self.batch_view.default_dir())
-        if not d:
+        dlg = MultiFolderDialog(self, self.batch_view.default_dir())
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
             return
-        self._batch_enqueue([d], first=d)
+        dirs = dlg.selected_folders()
+        if not dirs:
+            return
+        self._batch_enqueue(dirs, first=dirs[0])
 
     def _batch_enqueue(self, paths: list[str], first: str):
         """批量加入任务；重复输入在队列里内联提示"已在队列中"，不弹模态框、不静默丢。"""
@@ -715,12 +759,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_lbl.setText(f"批量：{desc}")
 
     def _on_batch_state_changed(self, state: str):
-        running = state == STATE_RUNNING
+        # paused/pausing 期间任务线程仍存活，队列算 busy：单任务/设置入口保持被拦。
+        running = state in (STATE_RUNNING, STATE_PAUSING, STATE_PAUSED)
         self.batch_view.set_batch_running(running)
         self.translate_view.set_blocked(running)
-        if running:
+        if state == STATE_PAUSING:
+            self.batch_view.set_pause_state("requested")
+            self.status_lbl.setText("批量队列暂停中…")
+        elif state == STATE_PAUSED:
+            self.batch_view.set_pause_state("paused")
+            self.status_lbl.setText("批量队列已暂停（显卡资源已释放）")
+        elif state == STATE_RUNNING:
+            self.batch_view.set_pause_state("running")
             self.status_lbl.setText("批量队列运行中…")
         else:
+            self.batch_view.set_pause_state("disabled")
             if not self.job_controller.is_busy():
                 self.status_progress.setVisible(False)
             self.status_lbl.setText("就绪")

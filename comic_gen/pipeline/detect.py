@@ -99,6 +99,49 @@ def suppress_overlaps(
     return kept
 
 
+def suppress_duplicate_text_runs(
+    regions: list[Region], y_overlap_thr: float = 0.8, min_text_len: int = 2
+) -> list[Region]:
+    """OCR 后剔除"同一段文字被检测成多个重叠窄框"的重复——这是叠印之外的第二类重复。
+
+    实测（493 页杂志，2026-08-25）：RT-DETRv2 对窄高的日文竖排文字行，会沿其长边
+    生成多个几乎重叠、y 范围重合的窄条框，OCR 后每一条都吐出完全相同的内容，翻译/
+    渲染就把同一句台词重复抹字贴 N 次（167.JPEG 一条竖排文字被检测成 7 个框、渲染
+    出 7 行重复的「それでも、」）。
+
+    抑制依赖 OCR 文本：两个源文本相同的框，若 y 重叠比例超过阈值，只保留第一个
+    （保持输入顺序——调用方传入的是 reading_order 排好的阅读顺序，译文的顺序语义
+    不能因为去重被破坏）。不做坐标层面的启发式（竖排窄条重叠本身合法），只删
+    "读了同一份文字"的重复。
+    """
+    kept: list[Region] = []
+    for r in regions:
+        text = (r.source_text or "").strip()
+        if len(text) < min_text_len:
+            kept.append(r)
+            continue
+        dup = any(
+            (k.source_text or "").strip() == text
+            and _vertical_overlap_ratio(r.bbox, k.bbox) > y_overlap_thr
+            for k in kept
+        )
+        if not dup:
+            kept.append(r)
+    return kept
+
+
+def _vertical_overlap_ratio(a: list[int], b: list[int]) -> float:
+    """两框在 y 轴上的重叠比例（重叠高 / 两框较矮者的高）。
+
+    竖排文字行沿 x 平移、y 范围几乎重合（高度相近、重叠高接近各自的高），用这个
+    判据能把"同一行文字的多个窄条"识别出来，又不会误伤 y 上确实错开的不同气泡。
+    """
+    _, y1, _, h1 = a
+    _, y2, _, h2 = b
+    overlap = max(0, min(y1 + h1, y2 + h2) - max(y1, y2))
+    return overlap / max(1, min(h1, h2))
+
+
 def filter_region_quality(
     regions: list[Region], min_score: float = REGION_QUALITY_MIN_SCORE
 ) -> list[Region]:

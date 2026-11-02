@@ -3,8 +3,10 @@ from comic_gen.core.model_locator import plan_download_bytes
 
 
 def test_plan_download_bytes_sums_layout_file_only():
+    # "llm" 的 size_bytes 故意是 0（见 manifest.py/test_manifest.py 的注释——这个 key
+    # 允许自由换绑其它模型，不拿具体某个模型的字节数卡死），对总量贡献为 0。
     total = plan_download_bytes(["sakura", "llm"])
-    assert total == 4_250_298_208 + 2_497_281_120
+    assert total == 8_180_361_440
 
 
 def test_plan_download_bytes_excludes_layout_dir():
@@ -14,7 +16,7 @@ def test_plan_download_bytes_excludes_layout_dir():
 
 def test_plan_download_bytes_mixed():
     total = plan_download_bytes(["sakura", "detect"])
-    assert total == 4_250_298_208
+    assert total == 8_180_361_440
 
 
 def test_plan_download_bytes_empty_list():

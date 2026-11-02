@@ -51,13 +51,35 @@ class PipelineWorker(QtCore.QObject):
     log = QtCore.Signal(str)
     progress = QtCore.Signal(float, str)      # (0~1, 描述)
     loadProgress = QtCore.Signal(int, int)
+    paused = QtCore.Signal()                  # 真正进入暂停状态（模型已释放，等继续）
     finished = QtCore.Signal(object)          # JobReport 或异常字符串
 
-    def __init__(self, runner, request: JobRequest, cancel_event):
+    def __init__(self, runner, request: JobRequest, cancel_event,
+                 pause_requested: threading.Event | None = None,
+                 resume_event: threading.Event | None = None):
         super().__init__()
         self.runner = runner
         self.request = request
         self.cancel_event = cancel_event
+        # 暂停支持：两个事件都由 JobController 持有（UI 线程 set，工作线程读）。
+        # 都传 None 表示该路径不提供暂停能力（批量队列目前就是这样）。
+        self.pause_requested = pause_requested
+        self.resume_event = resume_event
+
+    # ------------------------------------------------------------ 暂停回调
+    def _should_pause(self) -> bool:
+        return bool(self.pause_requested and self.pause_requested.is_set())
+
+    def _resume_wait(self) -> None:
+        """阻塞直到用户点了「继续」或收到停止请求。事件由 UI 线程的 resume() 设置；
+        0.5s 轮询让停止请求最多延迟半秒生效，不会被一次长暂停卡死。"""
+        while not self.cancel_event.is_set():
+            if self.resume_event.wait(0.5):
+                self.resume_event.clear()
+                return
+
+    def _on_paused(self) -> None:
+        self.paused.emit()
 
     @QtCore.Slot()
     def run(self):
@@ -72,16 +94,24 @@ class PipelineWorker(QtCore.QObject):
                 self.loadProgress.emit(i, n)
 
             self.runner.log = lambda m: self.log.emit(str(m))
+            pause_kwargs = {}
+            if self.pause_requested is not None and self.resume_event is not None:
+                pause_kwargs = {
+                    "should_pause": self._should_pause,
+                    "resume_wait": self._resume_wait,
+                    "on_paused": self._on_paused,
+                }
             if self.request.is_rerender:
                 report = self.runner.rerender(
                     self.request.input_path, self.request.output_path,
                     progress=cb, should_cancel=self.cancel_event.is_set,
-                    work_dir_override=self.request.work_dir_override,
+                    work_dir_override=self.request.work_dir_override, **pause_kwargs,
                 )
             else:
                 report = self.runner.run(
                     self.request.input_path, output_path=self.request.output_path,
                     progress=cb, load_cb=lcb, should_cancel=self.cancel_event.is_set,
+                    **pause_kwargs,
                 )
             self.finished.emit(report)
         except ComicGenError as e:

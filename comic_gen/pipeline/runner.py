@@ -227,13 +227,24 @@ class Runner:
     def run(self, input_path: str | Path, output_path: str | Path | None = None,
             progress=None, rerender: bool = False, load_cb=None,
             should_cancel: Callable[[], bool] | None = None,
-            work_dir_override: str | Path | None = None) -> JobReport:
+            work_dir_override: str | Path | None = None,
+            should_pause: Callable[[], bool] | None = None,
+            resume_wait: Callable[[], None] | None = None,
+            on_paused: Callable[[], None] | None = None) -> JobReport:
         """input_path 必须是最初翻译时的原始输入（pages.json 里记录的指纹），
         而不是翻译产出的工作目录/输出路径——否则 _load_pages 的指纹校验不通过，
         缓存会被当作"输入不一致"丢弃，rerender 实质上会从零重跑。
         跨会话场景（不知道原始输入路径，只知道工作目录）用 work_dir_override 绕开
         _work_dir 的重新推导，直接指定工作目录；此时仍需传入正确的 input_path
         以便重新解包出干净的原图供抹字/渲染使用。
+
+        暂停支持（should_pause/resume_wait/on_paused 三者搭配使用，省略即无暂停能力）：
+        - should_pause() 返回 True 表示收到暂停请求；
+        - 在暂停点 _wait_if_paused 会先释放全部已加载模型的显存（暂停期间 GPU 空闲），
+          再阻塞调用 resume_wait() 等待"继续"；
+        - on_paused() 在真正进入暂停状态后调用一次（UI 用它把按钮切成「继续」）；
+        - resume_wait() 返回后若 should_cancel() 为 True，视为暂停期间被停止，任务以
+          cancelled 收尾（pages.json 已落盘，可重跑续上）。
         """
         input_path = Path(input_path)
         # 覆盖保护要在解包/建目录之前做，越早拒绝越好。output_path 为 None 时会走
@@ -261,8 +272,9 @@ class Runner:
         cb_handler = attach_callback_handler(lambda msg: self.log(msg))
         file_handler = attach_job_file_handler(work_dir)
         try:
-            return self._run_body(
-                input_path, output_path, work_dir, progress, rerender, load_cb, should_cancel
+            report = self._run_body(
+                input_path, output_path, work_dir, progress, rerender, load_cb, should_cancel,
+                should_pause, resume_wait, on_paused,
             )
         finally:
             # 离线只是本次运行的状态（_go_offline_if_ready 的语义），跑完恢复原状——
@@ -274,8 +286,19 @@ class Runner:
             detach_handler(cb_handler)
             detach_handler(file_handler)
 
+        # 清理必须放在日志 handler 卸载之后：run.log 的 FileHandler 在 finally 里才
+        # close，此前删除它在 Windows 上会因文件被占用而失败（sharing violation）。
+        # 只对完整成功的任务执行——部分完成/失败/取消都保留中间产物，供重跑续上。
+        if self.cfg.cleanup_intermediate and isinstance(report, JobReport) \
+                and report.status == "ok":
+            self._cleanup_intermediates(work_dir)
+        return report
+
     def _run_body(self, input_path: Path, output_path, work_dir: Path, progress, rerender: bool,
-                   load_cb, should_cancel: Callable[[], bool] | None) -> JobReport:
+                   load_cb, should_cancel: Callable[[], bool] | None,
+                   should_pause: Callable[[], bool] | None = None,
+                   resume_wait: Callable[[], None] | None = None,
+                   on_paused: Callable[[], None] | None = None) -> JobReport:
         extract_dir = work_dir / "_extract"
         if extract_dir.exists():  # 清空旧解包，防止不同输入互相污染
             shutil.rmtree(extract_dir)
@@ -289,6 +312,9 @@ class Runner:
             self.log(f"[load] {i}/{n}")
 
         loaded = load_input(input_path, extract_dir, self.cfg, load_cb=_load_cb)
+        # 供 run() 在日志 handler 卸载后做中间产物清理（文件夹输入的工作目录里混着
+        # 交付物散图，压缩包/PDF 的交付物是输出文件、整个工作目录都可删）。
+        self._cleanup_kind = loaded.kind
         if output_path is None:
             output_path = default_output_path(loaded)
         output_path = Path(output_path)
@@ -333,10 +359,14 @@ class Runner:
         if todo:
             from .detect import reading_order
 
-            det = self._get_detector()
             rtl = self.cfg.source_lang == "ja"
 
             def _detect_page(p):
+                # 引擎在页内取而不是阶段开头取：暂停释放显存时，_release_models 清空的
+                # 是 Runner 的缓存；如果这里还挂着阶段开头拿到的那份引用，释放等于白做
+                # （模型对象仍被闭包引用，GC 回收不了）。页内 get_or_rebuild 在未暂停时
+                # 命中缓存是 O(1) 的签名比较，无感知开销；暂停后恢复则自然重建。
+                det = self._get_detector()
                 # 一次打开同时拿到尺寸与推理输入——旧实现 open 两次（detect 一次、
                 # 再 Image.open(...).size 一次），每次都要读文件头/解压，白费一页开销。
                 img = open_page(p)
@@ -350,6 +380,7 @@ class Runner:
                 should_cancel=should_cancel, progress=progress,
                 resolved_model_paths=resolved_model_paths, stage_timings=stage_timings,
                 per_page=_detect_page,
+                should_pause=should_pause, resume_wait=resume_wait, on_paused=on_paused,
             )
             if report is not None:
                 return report
@@ -357,10 +388,14 @@ class Runner:
         # 2. OCR
         todo = [p for p in pages if p.status == STATUS_DETECTED]
         if todo:
-            ocr = self._get_ocr()
+            from .detect import suppress_duplicate_text_runs
 
             def _ocr_page(p):
+                ocr = self._get_ocr()
                 ocr.recognize_regions(open_page(p), p.regions)
+                # 同一段竖排文字被检测成多个 y 重合的窄框时，OCR 出的文本相同——
+                # 不去重的话同一句台词会被翻译/渲染重复 N 遍（实测 167.JPEG 重复 7 遍）。
+                p.regions = suppress_duplicate_text_runs(p.regions)
                 p.status = STATUS_OCRED
 
             report = self._run_stage(
@@ -369,6 +404,7 @@ class Runner:
                 should_cancel=should_cancel, progress=progress,
                 resolved_model_paths=resolved_model_paths, stage_timings=stage_timings,
                 per_page=_ocr_page,
+                should_pause=should_pause, resume_wait=resume_wait, on_paused=on_paused,
             )
             if report is not None:
                 return report
@@ -377,9 +413,8 @@ class Runner:
         # 崩溃/断电/强杀只丢"当前这一页"，重启后从断点续，不重译已完成的页）
         todo = [p for p in pages if p.status == STATUS_OCRED]
         if todo:
-            translator = self._get_translator()
-
             def _translate_page(p):
+                translator = self._get_translator()
                 regions = [r for r in p.regions if r.source_text.strip()]
                 if regions:
                     results = translator.translate([r.source_text for r in regions], self.cfg)
@@ -394,6 +429,7 @@ class Runner:
                 should_cancel=should_cancel, progress=progress,
                 resolved_model_paths=resolved_model_paths, stage_timings=stage_timings,
                 per_page=_translate_page,
+                should_pause=should_pause, resume_wait=resume_wait, on_paused=on_paused,
             )
             if report is not None:
                 return report
@@ -401,9 +437,8 @@ class Runner:
         # 4. 抹字 + 渲染
         todo = [p for p in pages if p.status == STATUS_TRANSLATED]
         if todo:
-            inpainter = self._get_inpainter()
-
             def _render_page(p):
+                inpainter = self._get_inpainter()
                 out_img = render_single_page(open_page(p), p, self.cfg, inpainter, log=self.log)
                 # 原子写图：进程被杀在写盘中途时不留下截断 PNG 被校对页读到
                 atomic_save_image(out_img, trans_dir / p.image)
@@ -415,6 +450,7 @@ class Runner:
                 should_cancel=should_cancel, progress=progress,
                 resolved_model_paths=resolved_model_paths, stage_timings=stage_timings,
                 per_page=_render_page,
+                should_pause=should_pause, resume_wait=resume_wait, on_paused=on_paused,
             )
             if report is not None:
                 return report
@@ -426,13 +462,14 @@ class Runner:
 
     def _run_stage(self, work_dir, pages, input_path, output_path, todo, stage, cancel_label,
                    error_prefix, progress_label, should_cancel, progress, resolved_model_paths,
-                   stage_timings, per_page) -> JobReport | None:
+                   stage_timings, per_page, should_pause=None, resume_wait=None,
+                   on_paused=None) -> JobReport | None:
         """跑一个流水线阶段（todo 里的页面逐一处理）。
 
         返回取消时的 JobReport（调用方直接 return），正常完成返回 None。
         per_page(p) 负责一页在这个阶段的真正工作并置目标状态；异常在这里统一落
         error/error_stage（core.errors.Stage 的字符串值），并逐页落盘——这是断点续跑
-        的根基，四个阶段共用同一套骨架，改取消/落盘/计时要同步改一处而不是四处。
+        的根基，四个阶段共用同一套骨架，改取消/暂停/落盘/计时要同步改一处而不是四处。
         """
         if not todo:
             return None
@@ -441,6 +478,11 @@ class Runner:
             if self._cancelled(should_cancel):
                 self.log(f"已停止（{cancel_label}阶段）")
                 # 取消前防御性再落一次盘：已处理页的进度必须可恢复
+                self._save_pages(work_dir, pages, input_path)
+                return JobReport.cancelled(pages, output_path)
+            if self._wait_if_paused(should_pause, resume_wait, should_cancel, on_paused):
+                # 暂停期间收到停止请求：与取消同路径收尾（pages.json 在上一个循环里
+                # 已落盘，这里再防御性落一次）
                 self._save_pages(work_dir, pages, input_path)
                 return JobReport.cancelled(pages, output_path)
             try:
@@ -459,6 +501,32 @@ class Runner:
         self._save_job_snapshot(work_dir, resolved_model_paths, stage_timings)
         return None
 
+    def _cleanup_intermediates(self, work_dir: Path) -> None:
+        """删除中间产物，只保留最终交付物（勾选 cfg.cleanup_intermediate 且任务完整
+        成功时由 run() 调用）。
+
+        文件夹输入：交付物就是工作目录根目录的散图（pack_output 已复制好），只删
+        translated/、_extract/ 与 pages.json/job.json/run.log 这些中间/状态文件；
+        压缩包/PDF 输入：交付物是输出文件，整个工作目录（解包原图 + 渲染图 + 状态
+        文件）都是中间产物，整体删掉。
+
+        清理是 best-effort：个别文件被占用删不掉只记日志警告，不能让任务在成功后
+        反而报失败。
+        """
+        try:
+            if getattr(self, "_cleanup_kind", "folder") == "folder":
+                for sub in ("translated", "_extract"):
+                    d = work_dir / sub
+                    if d.is_dir():
+                        shutil.rmtree(d)
+                for name in ("pages.json", "job.json", "run.log"):
+                    (work_dir / name).unlink(missing_ok=True)
+            elif work_dir.is_dir():
+                shutil.rmtree(work_dir)
+            self.log("[清理] 任务完成，已删除中间产物，仅保留最终交付物")
+        except OSError as e:
+            self.log(f"[警告] 清理中间产物失败（已保留中间文件，可手动删除）：{e}")
+
     @staticmethod
     def _cancelled(should_cancel: Callable[[], bool] | None) -> bool:
         """should_cancel 回调本身抛异常时按"未取消"处理——取消探测失败不该让任务崩溃。"""
@@ -469,12 +537,87 @@ class Runner:
         except Exception:
             return False
 
+    def _wait_if_paused(self, should_pause: Callable[[], bool] | None,
+                        resume_wait: Callable[[], None] | None,
+                        should_cancel: Callable[[], bool] | None,
+                        on_paused: Callable[[], None] | None) -> bool:
+        """暂停点（在每页处理前调用）：收到暂停请求就释放显存并阻塞等「继续」。
+
+        返回 True 表示暂停期间被停止（调用方以 cancelled 收尾），False 表示已恢复。
+        模型释放见 release_models——把缓存清空，恢复后下一页的 get_or_rebuild 会重建。
+        """
+        if should_pause is None or resume_wait is None:
+            return False
+        try:
+            paused = bool(should_pause())
+        except Exception:
+            return False
+        if not paused:
+            return False
+        if on_paused is not None:
+            try:
+                on_paused()
+            except Exception:
+                pass
+        self.log("已暂停，正在释放显卡资源…")
+        self.release_models()
+        self.log("已暂停，显卡资源已释放，可以放心做其它需要 GPU 的事。")
+        try:
+            resume_wait()
+        except Exception:
+            pass
+        if self._cancelled(should_cancel):
+            self.log("已停止（暂停期间收到停止请求）")
+            return True
+        self.log("已恢复运行，重新加载模型…")
+        return False
+
+    def release_models(self) -> None:
+        """卸载全部已加载的模型并释放显存（暂停时调用，恢复后按需重建）。
+
+        llama.cpp 翻译引擎有显式 close()（释放 C 层分配的模型/上下文显存）；
+        torch 系模型（detect/OCR/LaMa）靠丢引用 + gc.collect() + torch.cuda.empty_cache()。
+        清空的是 Runner 各引擎缓存，阶段闭包不得再持有旧引擎引用——_run_body 里
+        per_page 都在页内重新 get_or_rebuild，暂停释放后才能被真正回收。
+        """
+        for cache in (self._detector_cache, self._ocr_cache,
+                      self._inpainter_cache, self._translator_cache):
+            engine = getattr(cache, "_value", None)
+            if engine is not None:
+                self._close_engine(engine)
+            cache.clear()
+        import gc
+
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    def _close_engine(self, engine) -> None:
+        """对带显式资源句柄的引擎做释放前的关闭。只认 `.llm`（llama.cpp 的 Llama），
+        torch 系模型没有需要主动 close 的句柄，交给 GC + empty_cache。"""
+        llm = getattr(engine, "llm", None)
+        close = getattr(llm, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception as e:
+                self.log(f"[警告] 释放翻译引擎显存失败：{e}")
+
     # ------------------------------------------------------------ 重渲染（译后编辑）
     def rerender(self, input_path: str | Path, output_path: str | Path | None = None,
                  progress=None, should_cancel: Callable[[], bool] | None = None,
-                 work_dir_override: str | Path | None = None) -> JobReport:
+                 work_dir_override: str | Path | None = None,
+                 should_pause: Callable[[], bool] | None = None,
+                 resume_wait: Callable[[], None] | None = None,
+                 on_paused: Callable[[], None] | None = None) -> JobReport:
         return self.run(input_path, output_path, progress=progress, rerender=True,
-                         should_cancel=should_cancel, work_dir_override=work_dir_override)
+                         should_cancel=should_cancel, work_dir_override=work_dir_override,
+                         should_pause=should_pause, resume_wait=resume_wait, on_paused=on_paused)
 
     # ------------------------------------------------------------ 内部
     def _work_dir(self, input_path: Path, output_path) -> Path:

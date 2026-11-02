@@ -25,26 +25,104 @@ class LoadedInput:
     meta: dict = field(default_factory=dict)
 
 
+# ---------------------------------------------------------------- 按 dpi 降采样超大图片
+#
+# 背景（2026-08-22 实测）：一本图片输入的同人志，原始扫描图长边 6307px（约 2900 万
+# 像素/页），LaMa 抹字这一步耗时随像素数量级增长，实测约 4.4 分钟/页，83 分钟只处理
+# 完 19/58 页。PDF 输入本来就按 cfg.pdf_dpi 从矢量渲染，天然不会有这个问题；图片
+# 输入（文件夹/ZIP/CBZ/RAR/CBR/EPUB）没有可靠的物理尺寸信息（EXIF 里的 dpi 标签
+# 经常是扫描软件随手填的占位值，不可信），没法直接套用同一套 dpi 语义。
+#
+# 这里用户明确要求"复用同一个 pdf_dpi 设置当全局降采样阈值"，而不是新增一个独立配置项。
+# 为了有个具体的像素上限，假设参考开本是 B5（同人志/漫画最常见的实体书开本，长边
+# 约 10.1 英寸）——不要求输入图片是这个长宽比，只用它的长边算出"这个 dpi 下大概该有
+# 多少像素"这一个数字，再按输入图片自己的长边等比缩小，不改变原图的宽高比。
+REFERENCE_PAGE_LONG_EDGE_INCHES = 10.1  # B5 长边
+
+
+def target_long_edge_px(dpi: int) -> int:
+    """纯函数：给定 dpi，算出参考开本（B5）长边对应的像素数。"""
+    return round(REFERENCE_PAGE_LONG_EDGE_INCHES * dpi)
+
+
+def downscaled_size(width: int, height: int, target_long_edge: int) -> tuple[int, int] | None:
+    """纯函数：长边超过目标时按比例缩小，返回 (new_w, new_h)；未超过时返回 None
+    （不放大、不处理——只压超尺寸的图，不把本来就小的图强行拉伸到目标附近）。
+    """
+    long_edge = max(width, height)
+    if long_edge <= target_long_edge:
+        return None
+    scale = target_long_edge / long_edge
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def _downscale_oversized_images(pages: list[Path], rel_names: list[str], dst_dir: Path, dpi: int) -> list[Path]:
+    """把 pages 里长边超过 dpi 对应目标像素的图缩小、另存到 dst_dir，其余原样返回原路径
+    （不复制，省 IO）。返回列表与输入等长、顺序一致——下游按下标对齐 rel_names。
+
+    按 rel_names（而不是 src.name）在 dst_dir 下建目标路径——漫画输入常见按分卷
+    子文件夹组织（见 list_images 的文档），不同子卷完全可能撞同名文件（"01.jpg"）；
+    只用 basename 落盘会在这种输入上互相覆盖，用相对路径复原目录结构才不会撞。
+
+    dst_dir 只有真的要缩小时才创建，绝大多数正常尺寸的输入完全不碰这个目录。
+    """
+    from PIL import Image
+
+    target = target_long_edge_px(dpi)
+    out: list[Path] = []
+    dst_dir_ready = False
+    for src, rel in zip(pages, rel_names):
+        with Image.open(src) as im:
+            size = downscaled_size(im.width, im.height, target)
+            if size is None:
+                out.append(src)
+                continue
+            if not dst_dir_ready:
+                ensure_dir(dst_dir)
+                dst_dir_ready = True
+            resized = im.resize(size, Image.Resampling.LANCZOS)
+            dst = dst_dir / rel
+            ensure_dir(dst.parent)
+            is_jpeg = dst.suffix.lower() in (".jpg", ".jpeg")
+            if is_jpeg and resized.mode not in ("RGB", "L"):
+                resized = resized.convert("RGB")
+            if is_jpeg:
+                resized.save(dst, quality=95)
+            else:
+                resized.save(dst)
+        out.append(dst)
+    return out
+
+
 def load_input(input_path: str | Path, extract_dir: str | Path, cfg=None, load_cb=None) -> LoadedInput:
     p = Path(input_path)
     # 最常见的用户错误：路径打错字/文件被移走。旧行为是 p.is_dir()==False 且无后缀时
     # 报"不支持的输入类型: xxx"，把"路径不存在"伪装成"格式不支持"，误导排查方向。
     if not p.exists():
         raise InputError(f"输入路径不存在：{p}。请检查路径是否正确。")
+    extract_dir = Path(extract_dir)
+    suffix = p.suffix.lower()
     if p.is_dir():
         if load_cb:
             load_cb(1, 1)
-        return _load_folder(p)
-    suffix = p.suffix.lower()
-    if suffix in (".zip", ".cbz"):
-        return _load_zip(p, Path(extract_dir))
-    if suffix in (".rar", ".cbr"):
-        return _load_rar(p, Path(extract_dir))
-    if suffix == ".epub":
-        return _load_epub(p, Path(extract_dir))
-    if suffix == ".pdf":
-        return _load_pdf(p, Path(extract_dir), getattr(cfg, "pdf_dpi", 150), load_cb)
-    raise InputError(f"不支持的输入类型: {p}（支持 文件夹 / ZIP / CBZ / RAR / CBR / EPUB / PDF）")
+        loaded = _load_folder(p)
+    elif suffix in (".zip", ".cbz"):
+        loaded = _load_zip(p, extract_dir)
+    elif suffix in (".rar", ".cbr"):
+        loaded = _load_rar(p, extract_dir)
+    elif suffix == ".epub":
+        loaded = _load_epub(p, extract_dir)
+    elif suffix == ".pdf":
+        # PDF 直接按 dpi 从矢量/内嵌位图渲染，物理尺寸精确已知，天然就是目标分辨率，
+        # 不需要也不能套下面这层"按参考开本估算"的降采样（那是给没有物理尺寸信息的
+        # 图片输入用的）。
+        return _load_pdf(p, extract_dir, getattr(cfg, "pdf_dpi", 150), load_cb)
+    else:
+        raise InputError(f"不支持的输入类型: {p}（支持 文件夹 / ZIP / CBZ / RAR / CBR / EPUB / PDF）")
+    loaded.pages = _downscale_oversized_images(
+        loaded.pages, loaded.rel_names, extract_dir / "resized", getattr(cfg, "pdf_dpi", 150)
+    )
+    return loaded
 
 
 # ---------------------------------------------------------------- 输入

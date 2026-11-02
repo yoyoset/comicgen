@@ -53,12 +53,15 @@ def _build_arg_parser():
     p.add_argument("--translator", default="sakura", choices=tuple(TRANSLATOR_REGISTRY))
     p.add_argument("--source-lang", default="ja", choices=SUPPORTED_SOURCE_LANGS)
     p.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
+    p.add_argument("--cleanup-intermediate", action="store_true",
+                   help="任务完整成功后删除中间产物，仅保留最终交付物（之后无法校对/断点续跑）")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
-    cfg = Config(translator=args.translator, source_lang=args.source_lang, device=args.device)
+    cfg = Config(translator=args.translator, source_lang=args.source_lang, device=args.device,
+                 cleanup_intermediate=args.cleanup_intermediate)
     try:
         report = run_job(args.input, args.output, cfg)
     except Exception as e:

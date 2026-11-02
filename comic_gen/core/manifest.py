@@ -85,13 +85,18 @@ MODEL_MANIFEST: dict[str, ModelSpec] = {
         key="sakura",
         label="Sakura（本地日译中）",
         purpose="日文漫画翻译（轻小说风格）",
-        repo="SakuraLLM/Sakura-7B-Qwen2.5-v1.0-GGUF",
+        # 2026-11-02 由 Sakura-7B-Qwen2.5-v1.0 换成 Sakura-14B-Qwen3-v1.5（2026-01 发布）。
+        # 同机 16 句日语台词 + 批量对齐实测：7B 把单数译成"你们"、批量 16 句只回 14 行；
+        # 14B 都对（样本很小，只作方向性证据）。大小与 subgen 项目
+        # 声明的同一文件一致，共用 F:\hf_cache 下一份权重。许可 cc-by-nc-sa-4.0（非商用）。
+        # 旧 7B 文件仍在磁盘上，但绑定了它的旧设置会因大小不符被判无效，需要重新「定位…」。
+        repo="SakuraLLM/Sakura-14B-Qwen3-v1.5-GGUF",
         kind="llm_gguf",
         layout=LAYOUT_FILE,
-        approx_size="~4.3GB",
+        approx_size="~8.2GB",
         required=False,
-        filename="sakura-7b-qwen2.5-v1.0-iq4xs.gguf",
-        size_bytes=4_250_298_208,
+        filename="sakura-14b-qwen3-v1.5-iq4xs.gguf",
+        size_bytes=8_180_361_440,
         magic=b"GGUF",
         ext_filter="GGUF 模型 (*.gguf)",
     ),
@@ -101,13 +106,23 @@ MODEL_MANIFEST: dict[str, ModelSpec] = {
         key="llm",
         label="通用本地翻译（多语言）",
         purpose="非日文漫画翻译",
-        repo="unsloth/Qwen3-4B-Instruct-2507-GGUF",
+        # Qwen3 没有官方 -Instruct-2507 纯指令刷新版本（那一波刷新只出了 4B/30B-A3B/235B-A22B），
+        # 14B 只有原始混合思考/非思考版，靠 GeneralLLMTranslator 的 system_prompt 追加 /no_think
+        # 关闭思考模式（translate.py 的 _LLM_SYS_TMPL），并在 _call 里兜底剥掉可能漏出的 <think> 块。
+        # 这是默认推荐的下载项，不是唯一允许的文件——size_bytes 故意留 0（按 ModelSpec 的既有
+        # 约定，见上面字段注释），换成别的通用指令 GGUF 模型（比如想要更快的 4B、或更平衡的
+        # MoE 模型）时直接在「模型管理」页「定位…」绑定过去即可，不需要改这份 manifest、
+        # 不需要重新打包 EXE。resolve_status/validate_candidate 只查 magic 头确认是 GGUF 文件，
+        # 不再拿这里的具体某个模型的字节数卡死绑定——2026-08-22 实测吃过这个亏：换个模型
+        # 要改代码+重新打包+清绑定，三步缺一都会导致"改了却没生效"或"报文件大小异常"，
+        # 详见 comic-gen 项目 memory 的 translation-model-4b-to-14b.md。
+        repo="unsloth/Qwen3-14B-GGUF",
         kind="llm_gguf",
         layout=LAYOUT_FILE,
-        approx_size="~2.4GB",
+        approx_size="~8.4GB",
         required=False,
-        filename="Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-        size_bytes=2_497_281_120,
+        filename="Qwen3-14B-Q4_K_M.gguf",
+        size_bytes=0,
         magic=b"GGUF",
         ext_filter="GGUF 模型 (*.gguf)",
     ),

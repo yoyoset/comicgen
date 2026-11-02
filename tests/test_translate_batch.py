@@ -10,7 +10,14 @@
 用脚本化的 FakeLLM 替代真实 llama.cpp 调用。
 """
 from comic_gen.core.config import Config
-from comic_gen.pipeline.translate import _ECHO_MARKERS, BaseTranslator, _is_failed_translation
+from comic_gen.pipeline.translate import (
+    _ECHO_MARKERS,
+    BaseTranslator,
+    SakuraTranslator,
+    _has_degenerate_repetition,
+    _is_failed_translation,
+    _strip_think_block,
+)
 
 
 class FakeLLM:
@@ -145,11 +152,61 @@ def test_is_failed_translation_rules():
     assert _is_failed_translation("こんにちは", "你好") is False
 
 
+def test_degenerate_repetition_is_rejected():
+    """回归：328.JPEG 实测——垃圾 OCR 输入让 Sakura 循环输出同一短句 N 遍，
+    `_is_failed_translation` 必须拦下这种结果落空串（否则抹字渲染到页面上）。"""
+    src = "そんなことはないのですが……"
+    assert _is_failed_translation(src, "那是什么？因为是这样吗？还是因为这样呢？因为是这样吗？因为是这样吗？因为是这样吗？因为是这样吗？因为是这样吗？") is True
+    # 无标点的连写退化
+    assert _is_failed_translation(src, "这样这样这样这样这样这样这样这样这样这样") is True
+    # 输出长度暴涨（循环吃满 max_tokens 的特征）
+    assert _is_failed_translation("短", "短" * 300) is True
+    # 正常译文不受影响
+    assert _is_failed_translation(src, "虽然没有那种事……但就是会这么想呢。而且或许不知道，虽然觉得应该没有，但就是那样。") is False
+
+
+def test_has_degenerate_repetition_does_not_flag_normal_emphasis():
+    """漫画里合法的强调重复（短句、1-2 字重复）不能误伤。"""
+    assert _has_degenerate_repetition("加油！加油！加油！") is False
+    assert _has_degenerate_repetition("哈哈哈哈哈哈") is False
+    assert _has_degenerate_repetition("好。好。好。我们走吧。") is False
+    assert _has_degenerate_repetition("我明白了，你明白了，他也明白了。") is False
+    assert _has_degenerate_repetition("既然如此，那就没办法了。") is False
+    assert _has_degenerate_repetition("……") is False
+
+
+def test_sakura_repeat_penalty_restored_to_1_1():
+    """回归：曾按官方 README 改成 1.0，实测 IQ4XS 量化在垃圾输入下退化成重复循环
+    （1500+ 字），1.1 是同输入下的既有缓解。守住这个值不被改回去。"""
+    assert SakuraTranslator.repeat_penalty == 1.1
+
+
+def test_strip_think_block_removes_reasoning_and_keeps_answer():
+    raw = "<think>这里应该翻译成……</think>你好"
+    assert _strip_think_block(raw) == "你好"
+
+
+def test_strip_think_block_handles_multiline_reasoning():
+    raw = "<think>\n分析一下语境\n再想想措辞\n</think>\n早安。"
+    assert _strip_think_block(raw) == "早安。"
+
+
+def test_strip_think_block_no_think_tag_passes_through_unchanged():
+    assert _strip_think_block("你好") == "你好"
+
+
 def test_echo_markers_still_appear_in_prompts():
-    """防漂移：_ECHO_MARKERS 是提示词模板的字面量子串，改了措辞要同步改这里。"""
+    """防漂移：_ECHO_MARKERS 是提示词模板的字面量子串，改了措辞要同步改这里。
+
+    必须覆盖两个引擎：llm 引擎（BaseTranslator）的编号批量格式，和 Sakura 引擎
+    （SakuraTranslator）的官方多行直连格式，各自动态的 marker 缺一不可。
+    """
     cfg = Config(target_lang="简体中文")
-    combined = BaseTranslator._batch_prompt(["a", "b"], cfg) + BaseTranslator._single_prompt(
-        ["a", "b", "c"], 1, cfg
+    combined = (
+        BaseTranslator._batch_prompt(["a", "b"], cfg)
+        + BaseTranslator._single_prompt(["a", "b", "c"], 1, cfg)
+        + SakuraTranslator._batch_prompt(["a", "b"], cfg)
+        + SakuraTranslator._single_prompt(["a", "b", "c"], 1, cfg)
     )
     for marker in _ECHO_MARKERS:
         assert marker in combined, f"标记 {marker!r} 未出现在任何提示词模板里，测试已失去意义"
@@ -187,3 +244,75 @@ def test_uncapped_page_leaves_empty_not_garbage():
     result = BaseTranslator()._translate_batch_llm(texts, Config(), fake)
 
     assert all(v == "" for v in result)  # 没有 None 泄漏，也没有半截垃圾文本
+
+
+# ---------------------------------------------------------------- Sakura 官方格式（回归）
+
+def test_sakura_batch_prompt_is_official_multi_line():
+    cfg = Config(target_lang="简体中文")
+    prompt = SakuraTranslator._batch_prompt(["あ", "い"], cfg)
+    assert prompt == "将下面的日文文本翻译成中文：あ\nい"
+    assert "1. " not in prompt  # 不带编号
+
+
+def test_sakura_single_prompt_keeps_official_format_with_context():
+    cfg = Config(target_lang="简体中文")
+    prompt = SakuraTranslator._single_prompt(["前", "中", "后"], 1, cfg)
+    assert prompt.startswith("（上下文，仅供理解语境，不要翻译）")
+    assert prompt.endswith("将下面的日文文本翻译成中文：中")
+    assert "编号" not in prompt
+
+
+def test_parse_plain_lines_alignment():
+    assert SakuraTranslator._parse_plain_lines("甲\n乙\n丙", 3) == ["甲", "乙", "丙"]
+    assert SakuraTranslator._parse_plain_lines(" 甲 \n 乙 ", 2) == ["甲", "乙"]  # strip
+    # 行数不足/超出/空回复：整体置 None，绝不按错误位置错位
+    assert SakuraTranslator._parse_plain_lines("甲\n乙", 3) == [None, None, None]
+    assert SakuraTranslator._parse_plain_lines("甲\n乙\n丙\n丁", 3) == [None, None, None]
+    assert SakuraTranslator._parse_plain_lines("", 3) == [None, None, None]
+
+
+def test_parse_batch_hook_dispatches_per_engine():
+    assert BaseTranslator._parse_batch("1. 甲\n2. 乙", 2) == ["甲", "乙"]
+    assert SakuraTranslator._parse_batch("甲\n乙", 2) == ["甲", "乙"]
+
+
+def test_sakura_translate_uses_official_format_and_plain_parse():
+    texts = ["a", "b", "c"]
+    reply = "\n".join(["译a", "译b", "译c"])
+    fake = FakeLLM([reply])
+    # __new__ 绕过 __init__（后者会加载真实模型），只测 batch 流程本身
+    inst = SakuraTranslator.__new__(SakuraTranslator)
+
+    result = inst._translate_batch_llm(texts, Config(target_lang="简体中文"), fake)
+
+    assert result == ["译a", "译b", "译c"]
+    prompt = fake.calls[0][0]
+    assert prompt.startswith("将下面的日文文本翻译成中文：")
+    assert prompt == "将下面的日文文本翻译成中文：a\nb\nc"
+    assert len(fake.calls) == 1
+
+
+def test_sakura_line_count_mismatch_retries_individually():
+    texts = ["a", "b", "c"]
+    # 官方格式回复行数不足（2 行 vs 3 行）→ 整块判 None → 逐条重试 3 次
+    fake = FakeLLM(["译a\n译b", "A", "B", "C"])
+    inst = SakuraTranslator.__new__(SakuraTranslator)
+
+    result = inst._translate_batch_llm(texts, Config(target_lang="简体中文"), fake)
+
+    assert result == ["A", "B", "C"]
+    assert len(fake.calls) == 1 + 3
+    assert "将下面的日文文本翻译成中文：" in fake.calls[1][0]  # 重试也是官方单句格式
+
+
+def test_sakura_official_echo_is_rejected():
+    texts = ["ドン"]
+    echo = "将下面的日文文本翻译成中文：ドン"
+    fake = FakeLLM([echo, echo])
+    inst = SakuraTranslator.__new__(SakuraTranslator)
+
+    result = inst._translate_batch_llm(texts, Config(target_lang="简体中文"), fake)
+
+    assert result == [""]  # 回显官方格式提示词 → 落空串保留原文
+    assert echo not in result

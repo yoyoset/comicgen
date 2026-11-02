@@ -70,8 +70,9 @@ EXE 实测仅到「翻译前」：`unidic_lite` 词典缺失（已修）→ `man
 
 **P2-5 Gallery 预览返回类型可能不符** `ui/app.py:22-30` 返回 `list[str]`，Gradio 6 `gr.Gallery` 期望 `list[dict(image,caption)]`。可能静默无预览。建议返回 `[(path, None), ...]`。
 
-**P2-6 Sakura 提示词格式未必匹配** `translate.py:112-122`
+**P2-6 Sakura 提示词格式未必匹配** ~~`translate.py:112-122`~~ ✅ 已修复（2026-08-15）
 用通用 chat 模板调 Sakura。Sakura 官方文档有特定提示格式（system + 用户「将以下日文翻译成中文：…」）。当前格式可能未对齐，质量存疑（实测 3 句对齐成功，但长文本未知）。
+→ 已切换官方 v1.0 多行直连格式（含 system 原文 + repeat_penalty 1.0），实测 12 页真实漫画对比：官方格式整页对齐 10/12 vs 编号批量 8/12，且编号批量有单页退化（8 条失败 5 条）而官方格式无。llm 引擎保持编号批量（无官方约束）。
 
 **P2-7 zip 收集清单靠 `collect_all` 逐包试错** `build_exe.spec` 已加 gradio/gradio_client/safehttpx/groovy/llama_cpp/unidic_lite/fugashi/manga_ocr。仍可能有其他「importlib.resources 读 version.txt」类包未覆盖，回归时可能再现同型崩溃。
 

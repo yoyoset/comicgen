@@ -493,6 +493,40 @@ def _make_input_folder(tmp_path, n=3):
     return input_dir
 
 
+def test_ocr_stage_dedups_duplicate_text_runs(tmp_path, monkeypatch):
+    """防拆测试：`_ocr_page` 必须在 OCR 后应用 `suppress_duplicate_text_runs`。
+
+    同一段竖排文字被 RT-DETR 检成多个 y 重合窄框时，OCR 后文本相同——不去重的话
+    同一句台词会被翻译/渲染 N 遍（实测 167.JPEG 重复 7 遍）。有人删掉那行接线，
+    这里会立刻失败（页面上 3 个重复框应该坍缩为 1）。
+    """
+    _make_fake_pipeline(monkeypatch)
+    import comic_gen.pipeline.detect as detect_mod
+
+    class SweepDetector:
+        def __init__(self, *a, **k):
+            pass
+
+        def detect(self, image):
+            # 模拟 RT-DETR 对同一竖排文字行的扫射：3 个 y 重合的窄条框
+            return [
+                Region(bbox=[100, 100, 20, 300], score=0.8, direction="vertical"),
+                Region(bbox=[120, 100, 20, 300], score=0.7, direction="vertical"),
+                Region(bbox=[140, 100, 20, 300], score=0.6, direction="vertical"),
+            ]
+
+    monkeypatch.setattr(detect_mod, "ComicDetector", SweepDetector)
+
+    input_dir = _make_input_folder(tmp_path, n=1)
+    output_dir = tmp_path / "output"
+    cfg = Config(translator="mock", source_lang="ja")
+    report = Runner(cfg).run(str(input_dir), str(output_dir))
+    assert report.status == "ok"
+    pages = json.loads((output_dir / "pages.json").read_text(encoding="utf-8"))
+    regions = [r for r in pages["pages"][0]["regions"] if r["source_text"].strip()]
+    assert len(regions) == 1  # 3 个重复框坍缩为 1
+
+
 def test_run_saves_translate_progress_incrementally(tmp_path, monkeypatch):
     """0.2 回归测试：翻译阶段中途被"外部强杀"打断，已翻完的页必须已经落盘。
 
@@ -519,7 +553,10 @@ def test_run_saves_translate_progress_incrementally(tmp_path, monkeypatch):
 
     cfg = Config(translator="mock", source_lang="ja")
     runner = Runner(cfg)
-    runner._get_translator = lambda: CrashOnSecondPageTranslator()
+    # 引擎现在是页内 get_or_rebuild（暂停释放显存后要能重建），返回同一个共享实例
+    # 等价于缓存命中：calls 计数器跨页延续。
+    crash_translator = CrashOnSecondPageTranslator()
+    runner._get_translator = lambda: crash_translator
 
     with pytest.raises(KeyboardInterrupt):
         runner.run(str(input_dir), str(output_dir))
@@ -739,3 +776,232 @@ def test_run_cancelled_report_carries_resolved_output_path(tmp_path, monkeypatch
     assert report.status == "cancelled"
     assert report.output_path == output_dir
     assert "0/3" in report.summary
+
+
+# ---------------------------------------------------------------- 暂停（pause + 释放显存 + 继续）
+
+
+def test_run_pause_releases_models_and_resumes(tmp_path, monkeypatch):
+    """暂停语义：收到暂停请求后（页边界）调用 on_paused + release_models，resume_wait
+    返回后从断点继续——已处理的页不重做，被清空的引擎缓存在下一次取用时重建。
+
+    用 progress 回调在检测第 1 页完成后发出暂停请求：第 2 页处理前应触发暂停，
+    之后计数型检测模型要重建一次（release 清了缓存），第 3 页复用新实例。
+    """
+    _make_fake_pipeline(monkeypatch)
+    import comic_gen.pipeline.detect as detect_mod
+
+    built = {"count": 0}
+
+    class CountingDetector:
+        def __init__(self, *a, **k):
+            built["count"] += 1
+
+        def detect(self, image):
+            return [Region(bbox=[0, 0, 10, 10], direction="horizontal")]
+
+    monkeypatch.setattr(detect_mod, "ComicDetector", CountingDetector)
+
+    input_dir = _make_input_folder(tmp_path, n=3)
+    output_dir = tmp_path / "output"
+
+    calls = {"on_paused": 0}
+    control = {"paused": False}
+
+    runner = Runner(Config(translator="mock", source_lang="ja"))
+
+    def on_progress(i, total, stage):
+        if stage == "detect" and i == 1:
+            control["paused"] = True  # 第 1 页处理完，发出暂停请求
+
+    def resume_wait():
+        control["paused"] = False  # 模拟用户点「继续」清掉请求
+
+    report = runner.run(
+        str(input_dir), str(output_dir),
+        progress=on_progress,
+        should_pause=lambda: control["paused"],
+        resume_wait=resume_wait,
+        on_paused=lambda: calls.__setitem__("on_paused", calls["on_paused"] + 1),
+    )
+    assert report.status == "ok"
+    assert calls["on_paused"] == 1
+    # 真正走了 release_models：缓存被清空，第 2 页重建检测模型（第 3 页复用新实例）
+    assert built["count"] == 2
+    pages = json.loads((output_dir / "pages.json").read_text(encoding="utf-8"))
+    assert all(p["status"] == "rendered" for p in pages["pages"])
+
+
+def test_run_cancel_during_pause_returns_cancelled(tmp_path, monkeypatch):
+    """暂停期间收到停止请求：任务以 cancelled 收尾（pages.json 已落盘，可重跑续上），
+    而不是在暂停里无限等下去。"""
+    _make_fake_pipeline(monkeypatch)
+    input_dir = _make_input_folder(tmp_path, n=3)
+    output_dir = tmp_path / "output"
+
+    cancel = {"flag": False}
+    control = {"paused": True}  # 一开始就处于暂停请求状态
+
+    runner = Runner(Config(translator="mock", source_lang="ja"))
+
+    def resume_wait():
+        cancel["flag"] = True  # 暂停中收到停止请求，resume_wait 返回（不恢复）
+
+    report = runner.run(
+        str(input_dir), str(output_dir),
+        should_cancel=lambda: cancel["flag"],
+        should_pause=lambda: control["paused"],
+        resume_wait=resume_wait,
+        on_paused=lambda: None,
+    )
+    assert report.status == "cancelled"
+    # 至少第一页还没开始处理，进度是 0/3
+    assert "0/3" in report.summary
+
+
+def test_release_models_closes_llm_and_clears_all_caches(monkeypatch):
+    """release_models：llama.cpp 引擎的显式 close() 被调用，四个引擎缓存清空，
+    下一次 _get_* 全部重建。"""
+    import comic_gen.pipeline.detect as detect_mod
+    import comic_gen.pipeline.inpaint as inpaint_mod
+    import comic_gen.pipeline.ocr as ocr_mod
+    import comic_gen.pipeline.registry as registry_mod
+
+    built = {"detect": 0, "ocr": 0, "inpaint": 0, "translator": 0}
+    closed = {"llm": 0}
+
+    class FakeDetector:
+        def __init__(self, *a, **k):
+            built["detect"] += 1
+
+    class FakeOcr:
+        def __init__(self, *a, **k):
+            built["ocr"] += 1
+
+    class FakeInpainter:
+        def __init__(self, *a, **k):
+            built["inpaint"] += 1
+
+    class FakeLlama:
+        def close(self):
+            closed["llm"] += 1
+
+    class FakeTranslator:
+        name = "mock"
+
+        def __init__(self, cfg):
+            built["translator"] += 1
+            self.llm = FakeLlama()
+
+    monkeypatch.setattr(detect_mod, "ComicDetector", FakeDetector)
+    monkeypatch.setattr(ocr_mod, "OcrEngine", FakeOcr)
+    monkeypatch.setattr(inpaint_mod, "Inpainter", FakeInpainter)
+    monkeypatch.setattr(
+        registry_mod, "TRANSLATOR_REGISTRY",
+        {"mock": registry_mod.TranslatorEntry("mock", FakeTranslator)},
+    )
+
+    runner = Runner(Config(translator="mock", source_lang="ja"))
+    runner._get_detector()
+    runner._get_ocr()
+    runner._get_inpainter()
+    runner._get_translator()
+    assert built == {"detect": 1, "ocr": 1, "inpaint": 1, "translator": 1}
+
+    runner.release_models()
+    assert closed["llm"] == 1  # llama.cpp 的 close() 被显式调用
+
+    runner._get_detector()
+    runner._get_translator()
+    assert built["detect"] == 2  # 缓存清空，重建
+    assert built["translator"] == 2
+
+
+# ---------------------------------------------------------------- 完成后清理中间产物
+
+
+def test_cleanup_folder_input_keeps_only_deliverable(tmp_path, monkeypatch):
+    """勾选 cleanup_intermediate 且任务完整成功：文件夹输入的交付物就是工作目录根
+    目录的散图，translated/、pages.json、job.json、run.log 等中间/状态文件应被删掉，
+    根目录的成品图保留。"""
+    _make_fake_pipeline(monkeypatch)
+    input_dir = _make_input_folder(tmp_path, n=2)
+    output_dir = tmp_path / "output"
+
+    cfg = Config(translator="mock", source_lang="ja", cleanup_intermediate=True)
+    report = Runner(cfg).run(str(input_dir), str(output_dir))
+    assert report.status == "ok"
+    assert (output_dir / "page_0.png").exists()  # 交付物保留
+    assert (output_dir / "page_1.png").exists()
+    assert not (output_dir / "translated").exists()
+    assert not (output_dir / "pages.json").exists()
+    assert not (output_dir / "job.json").exists()
+    assert not (output_dir / "run.log").exists()
+
+
+def test_cleanup_default_keeps_intermediates(tmp_path, monkeypatch):
+    """不勾选（默认）：中间产物照常保留，供之后校对/断点续跑。"""
+    _make_fake_pipeline(monkeypatch)
+    input_dir = _make_input_folder(tmp_path, n=1)
+    output_dir = tmp_path / "output"
+
+    report = Runner(Config(translator="mock", source_lang="ja")).run(str(input_dir), str(output_dir))
+    assert report.status == "ok"
+    assert (output_dir / "translated" / "page_0.png").exists()
+    assert (output_dir / "pages.json").exists()
+    assert (output_dir / "job.json").exists()
+    assert (output_dir / "run.log").exists()
+
+
+def test_cleanup_zip_input_deletes_whole_work_dir(tmp_path, monkeypatch):
+    """压缩包输入：交付物是输出文件，整个工作目录（解包原图 + 译图 + 状态文件）
+    都应删除，只留输出 zip。"""
+    import zipfile
+
+    _make_fake_pipeline(monkeypatch)
+    input_zip = tmp_path / "input.zip"
+    with zipfile.ZipFile(input_zip, "w") as zf:
+        import io
+
+        buf = io.BytesIO()
+        Image.new("RGB", (20, 20), "white").save(buf, format="PNG")
+        zf.writestr("page_0.png", buf.getvalue())
+    output_zip = tmp_path / "out" / "input_translated.zip"
+
+    cfg = Config(translator="mock", source_lang="ja", cleanup_intermediate=True)
+    report = Runner(cfg).run(str(input_zip), str(output_zip))
+    assert report.status == "ok"
+    assert output_zip.exists()  # 交付物文件保留
+    work_dir = tmp_path / "out" / "input_translated"
+    assert not work_dir.exists()  # 整个工作目录已删
+
+
+def test_cleanup_skipped_on_partial_failure(tmp_path, monkeypatch):
+    """部分完成（有页失败）：即使勾选清理也不删中间产物——失败页要留着供重跑续上，
+    删了 translated/ 会让重跑在打包时静默回退到原图。"""
+    import comic_gen.pipeline.detect as detect_mod
+
+    _make_fake_pipeline(monkeypatch)
+
+    class OnePageBoomDetector:
+        def __init__(self, *a, **k):
+            pass
+
+        def detect(self, image):
+            if image.size[0] == 20:  # page_0 失败，page_1 成功 → 部分完成
+                raise RuntimeError("这一页检测失败")
+            return [Region(bbox=[0, 0, 10, 10], direction="horizontal")]
+
+    monkeypatch.setattr(detect_mod, "ComicDetector", OnePageBoomDetector)
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    Image.new("RGB", (20, 20), "white").save(input_dir / "page_0.png")
+    Image.new("RGB", (31, 31), "white").save(input_dir / "page_1.png")
+    output_dir = tmp_path / "output"
+
+    cfg = Config(translator="mock", source_lang="ja", cleanup_intermediate=True)
+    report = Runner(cfg).run(str(input_dir), str(output_dir))
+    assert report.status == "partial"
+    assert (output_dir / "translated" / "page_1.png").exists()  # 中间产物保留
+    assert (output_dir / "pages.json").exists()

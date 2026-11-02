@@ -43,9 +43,12 @@ def list_preview_images(output: str | None) -> list[Path]:
 class TranslateView(QtWidgets.QWidget):
     startRequested = QtCore.Signal()
     stopRequested = QtCore.Signal()
+    pauseRequested = QtCore.Signal()
+    resumeRequested = QtCore.Signal()
     rerenderRequested = QtCore.Signal()
     reviewRequested = QtCore.Signal()  # 打开最近一次完成任务的校对
     openOutputRequested = QtCore.Signal()  # 在文件管理器中打开最近一次任务的输出
+    cleanupToggled = QtCore.Signal(bool)  # 完成后清理中间产物选项变化
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -55,6 +58,7 @@ class TranslateView(QtWidgets.QWidget):
         self._last_output: str | None = None
         self._running = False      # 单任务自己是否正在跑
         self._blocked = False      # 批量队列运行中，单任务入口整体禁用
+        self._pause_mode = "disabled"      # running | requested | paused | disabled
         self._review_available = False
         self._build()
 
@@ -89,11 +93,22 @@ class TranslateView(QtWidgets.QWidget):
             self.dir_combo.addItem(n, v)
         lay.addRow("排版方向", self.dir_combo)
 
+        self.cleanup_check = QtWidgets.QCheckBox("完成后清理中间产物，仅保留最终成品")
+        self.cleanup_check.setToolTip(
+            "任务完整成功后退删除译图、解包原图与断点/日志等中间文件，只留最终交付物。\n"
+            "勾选后该任务将无法再校对、断点续跑或跨会话重渲染。")
+        self.cleanup_check.toggled.connect(self.cleanupToggled)
+        lay.addRow("", self.cleanup_check)
+
         self.start_btn = QtWidgets.QPushButton("开始翻译")
         self.start_btn.clicked.connect(self.startRequested)
         self.stop_btn = QtWidgets.QPushButton("停止")
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self.stopRequested)
+        self.pause_btn = QtWidgets.QPushButton("暂停")
+        self.pause_btn.setToolTip("在下一页开始前暂停并释放显卡（GPU）资源，之后可继续同一任务")
+        self.pause_btn.setEnabled(False)
+        self.pause_btn.clicked.connect(self._on_pause_clicked)
         self.rerender_btn = QtWidgets.QPushButton("重渲染")
         self.rerender_btn.setToolTip("编辑 pages.json 后重新渲染译文（需选择上次翻译的输出目录）")
         self.rerender_btn.clicked.connect(self.rerenderRequested)
@@ -103,6 +118,7 @@ class TranslateView(QtWidgets.QWidget):
         self.review_btn.clicked.connect(self.reviewRequested)
         br = QtWidgets.QHBoxLayout()
         br.addWidget(self.start_btn, 2)
+        br.addWidget(self.pause_btn, 1)
         br.addWidget(self.stop_btn, 1)
         br.addWidget(self.rerender_btn, 1)
         br.addWidget(self.review_btn, 1)
@@ -235,6 +251,13 @@ class TranslateView(QtWidgets.QWidget):
         """启动时从设置恢复：只作为文件对话框的起始目录，不预填输入框（避免误用陈旧路径）。"""
         self._last_browse_dir = d or ""
 
+    def cleanup_intermediate(self) -> bool:
+        return self.cleanup_check.isChecked()
+
+    def set_cleanup_intermediate(self, checked: bool):
+        """启动/另一页签切换时同步；setChecked 值没变不会重新触发 toggled，无回环。"""
+        self.cleanup_check.setChecked(checked)
+
     def set_running(self, running: bool):
         self._running = running
         self.stop_btn.setEnabled(running)
@@ -242,6 +265,35 @@ class TranslateView(QtWidgets.QWidget):
             # 任务结束/取消后清掉上一轮的阶段描述，避免"还停在 OCR 42/200"的残留误导
             self.progress_lbl.setText("")
         self._refresh_action_buttons()
+
+    def set_pause_state(self, mode: str):
+        """控制暂停按钮的四态（由 MainWindow 按任务状态驱动）：
+        - "running": 运行中，可点「暂停」
+        - "requested": 已请求暂停、等当前页跑完，不可点（避免重复请求）
+        - "paused": 已暂停（显存已释放），可点「继续」
+        - "disabled": 空闲/停止中，不可点
+        """
+        if mode not in ("running", "requested", "paused", "disabled"):
+            mode = "disabled"
+        self._pause_mode = mode
+        if mode == "paused":
+            self.pause_btn.setText("继续")
+            self.pause_btn.setEnabled(True)
+        elif mode == "requested":
+            self.pause_btn.setText("正在暂停…")
+            self.pause_btn.setEnabled(False)
+        elif mode == "running":
+            self.pause_btn.setText("暂停")
+            self.pause_btn.setEnabled(True)
+        else:
+            self.pause_btn.setText("暂停")
+            self.pause_btn.setEnabled(False)
+
+    def _on_pause_clicked(self):
+        if self._pause_mode == "paused":
+            self.resumeRequested.emit()
+        else:
+            self.pauseRequested.emit()
 
     def set_blocked(self, blocked: bool):
         """批量队列运行中：单任务入口（开始/重渲染/校对）整体禁用。

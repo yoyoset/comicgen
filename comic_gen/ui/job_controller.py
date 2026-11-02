@@ -16,6 +16,8 @@ from .workers import PipelineWorker
 
 STATE_IDLE = "idle"
 STATE_RUNNING = "running"
+STATE_PAUSING = "pausing"
+STATE_PAUSED = "paused"
 STATE_CANCELLING = "cancelling"
 
 
@@ -36,6 +38,8 @@ class JobController(QtCore.QObject):
         self._thread: QtCore.QThread | None = None
         self._worker: PipelineWorker | None = None
         self._cancel_event: threading.Event | None = None
+        self._pause_requested: threading.Event | None = None
+        self._resume_event: threading.Event | None = None
 
     @property
     def state(self) -> str:
@@ -53,15 +57,19 @@ class JobController(QtCore.QObject):
             self._runner.cfg = cfg
 
         self._cancel_event = threading.Event()
+        self._pause_requested = threading.Event()
+        self._resume_event = threading.Event()
         self._set_state(STATE_RUNNING)
 
         self._thread = QtCore.QThread()
-        self._worker = PipelineWorker(self._runner, request, self._cancel_event)
+        self._worker = PipelineWorker(self._runner, request, self._cancel_event,
+                                      self._pause_requested, self._resume_event)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.log.connect(self.log)
         self._worker.progress.connect(self.progress)
         self._worker.loadProgress.connect(self.loadProgress)
+        self._worker.paused.connect(self._on_worker_paused)
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.finished.connect(self._thread.quit)
         self._thread.start()
@@ -72,13 +80,36 @@ class JobController(QtCore.QObject):
         self._cancel_event.set()
         self._set_state(STATE_CANCELLING)
 
+    def pause(self) -> None:
+        """请求暂停：在下一个页边界生效（当前页跑完），届时 worker 释放显存并阻塞等待。"""
+        if self._state != STATE_RUNNING or self._pause_requested is None:
+            return
+        self._pause_requested.set()
+        self._set_state(STATE_PAUSING)
+
+    def resume(self) -> None:
+        """从暂停继续：唤醒 worker，模型在下一页懒加载重建。
+        必须同时清掉暂停请求——只 set resume_event 的话，worker 醒来后下一页边界
+        看到 _pause_requested 仍置位，会立刻再次暂停（实测离屏跑出来的死循环）。
+        """
+        if self._state != STATE_PAUSED or self._resume_event is None:
+            return
+        self._pause_requested.clear()
+        self._resume_event.set()
+        self._set_state(STATE_RUNNING)
+
     def shutdown(self, wait_ms: int = 3000) -> None:
-        """窗口关闭时调用：请求取消并等待线程收尾，避免拖着后台任务强退。"""
+        """窗口关闭时调用：请求取消并等待线程收尾，避免拖着后台任务强退。
+        暂停中的任务也会被停止（worker 的 _resume_wait 轮询 cancel_event，最多
+        半秒内退出暂停）。"""
         if self._thread and self._thread.isRunning():
             if self._cancel_event:
                 self._cancel_event.set()
             self._thread.quit()
             self._thread.wait(wait_ms)
+
+    def _on_worker_paused(self) -> None:
+        self._set_state(STATE_PAUSED)
 
     def _on_worker_finished(self, result) -> None:
         self._set_state(STATE_IDLE)

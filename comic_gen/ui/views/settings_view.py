@@ -101,8 +101,12 @@ class SettingsView(QtWidgets.QWidget):
         self.dpi_spin.setRange(72, 600)
         self.dpi_spin.setSuffix(" DPI")
         self.dpi_spin.editingFinished.connect(self._emit_changed)
-        lay.addRow("PDF DPI", self.dpi_spin)
-        lay.addRow("", _hint("仅影响 PDF 输入的渲染分辨率：150 速度快且够用，300 画质更好但明显更慢。"))
+        lay.addRow("全局 DPI", self.dpi_spin)
+        lay.addRow("", _hint(
+            "PDF 输入按此渲染；图片输入（文件夹/ZIP/CBZ/RAR/CBR/EPUB）超出这个 DPI 对应"
+            "参考开本（B5）像素上限的会先等比缩小再处理，避免原始扫描图分辨率过高导致抹字/"
+            "渲染耗时爆炸。150 速度快且够用，300 画质更好但明显更慢。"
+        ))
 
         self.font_edit = QtWidgets.QLineEdit()
         frow = QtWidgets.QHBoxLayout()
@@ -177,13 +181,13 @@ class SettingsView(QtWidgets.QWidget):
 
     def _reset_defaults(self):
         # 危险操作确认：恢复默认会把模型目录/推理设备/检测阈值/渲染参数（字号、字体、
-        # PDF DPI）全部还原，是用户花精力配置过的值，必须让用户确认。注意：这个页签
+        # 全局 DPI）全部还原，是用户花精力配置过的值，必须让用户确认。注意：这个页签
         # 只管上面这几项，**不会**清空「模型管理」页里逐项定位的模型路径绑定
         # （apply_to 不写 model_files）——对话框文案必须如实说明这一点，不能吓唬用户说
         # 绑定会被清空。
         if QtWidgets.QMessageBox.question(
             self, "恢复默认",
-            "将把模型目录、推理设备、检测阈值、字号、字体、PDF DPI 等恢复为默认值。\n"
+            "将把模型目录、推理设备、检测阈值、字号、字体、全局 DPI 等恢复为默认值。\n"
             "「模型管理」页里已定位的模型路径绑定不受影响（如需清除请到该页单独操作）。\n\n继续？",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
             QtWidgets.QMessageBox.No,

@@ -28,13 +28,15 @@ from .workers import PipelineWorker
 
 STATE_IDLE = "idle"
 STATE_RUNNING = "running"
+STATE_PAUSING = "pausing"
+STATE_PAUSED = "paused"
 
 
 class BatchController(QtCore.QObject):
     queueChanged = QtCore.Signal()          # 列表/状态变化，视图据此刷新
     jobStarted = QtCore.Signal(int, int)    # (当前任务下标 0 基, 总数)
     jobProgress = QtCore.Signal(float, str) # 当前任务进度 (0~1, 描述)
-    stateChanged = QtCore.Signal(str)       # idle / running
+    stateChanged = QtCore.Signal(str)       # idle / running / pausing / paused
     queueFinished = QtCore.Signal()         # 队列全部结束
     log = QtCore.Signal(str)
 
@@ -42,9 +44,13 @@ class BatchController(QtCore.QObject):
         super().__init__(parent)
         self.runner = runner
         self.queue = BatchQueue()
+        self._state = STATE_IDLE
         self._thread: QtCore.QThread | None = None
         self._worker: PipelineWorker | None = None
         self._cancel_event = threading.Event()
+        self._pause_requested = threading.Event()
+        self._resume_event = threading.Event()
+        self._pause_state = ""              # "" | pausing | paused（当前任务是否暂停中）
         self._prepare: Callable[[BatchJob], tuple] | None = None  # job -> (JobRequest, Config)
         self._current_index = -1
         self._stopped = False
@@ -55,7 +61,12 @@ class BatchController(QtCore.QObject):
     def is_busy(self) -> bool:
         return self._thread is not None and self._thread.isRunning()
 
+    @property
+    def state(self) -> str:
+        return self._state
+
     def _set_state(self, state: str):
+        self._state = state
         self.stateChanged.emit(state)
 
     # ------------------------------------------------------------ 队列操作
@@ -99,11 +110,37 @@ class BatchController(QtCore.QObject):
         self._run_next()
 
     def stop(self) -> None:
-        """停止队列：当前任务在页边界协作式取消，之后不再自动推进。排队中的任务保留。"""
+        """停止队列：当前任务在页边界协作式取消，之后不再自动推进。排队中的任务保留。
+        暂停中的任务也会被停止（worker 的 _resume_wait 轮询 cancel_event，最多半秒退出暂停）。"""
         if not self.is_busy:
             return
         self._stopped = True
+        self._pause_state = ""
         self._cancel_event.set()
+
+    def pause(self) -> None:
+        """请求暂停当前任务：下一页边界生效（当前页跑完），届时 worker 释放显存并阻塞。
+        队列停在当前任务，不自动推进下一个。"""
+        if not self.is_busy or self._pause_state:
+            return
+        self._pause_requested.set()
+        self._pause_state = "pausing"
+        self._set_state(STATE_PAUSING)
+
+    def resume(self) -> None:
+        """从暂停继续：唤醒 worker，当前任务模型在下一页懒加载重建。
+        必须同时清掉暂停请求，否则 worker 醒来后下一页边界会立刻再次暂停（与
+        JobController.resume 同一个坑）。"""
+        if self._pause_state != STATE_PAUSED:
+            return
+        self._pause_requested.clear()
+        self._resume_event.set()
+        self._pause_state = ""
+        self._set_state(STATE_RUNNING)
+
+    def _on_worker_paused(self) -> None:
+        self._pause_state = STATE_PAUSED
+        self._set_state(STATE_PAUSED)
 
     def _run_next(self) -> None:
         # 换新线程前必须先让上一个任务的 QThread 完全退出：worker.finished 触发
@@ -114,6 +151,7 @@ class BatchController(QtCore.QObject):
         self._reap_thread()
         job = self.queue.next_pending()
         if job is None:
+            self._pause_state = ""
             self._set_state(STATE_IDLE)
             self.queueFinished.emit()
             return
@@ -125,12 +163,17 @@ class BatchController(QtCore.QObject):
         request, cfg = self._prepare(job)
         self.runner.cfg = cfg
         self._cancel_event.clear()
+        # 清掉上个任务的暂停残留事件，避免新的 worker 第一页就被旧暂停请求卡住
+        self._pause_requested.clear()
+        self._resume_event.clear()
         self._thread = QtCore.QThread()
-        self._worker = PipelineWorker(self.runner, request, self._cancel_event)
+        self._worker = PipelineWorker(self.runner, request, self._cancel_event,
+                                      self._pause_requested, self._resume_event)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.progress.connect(self.jobProgress)
         self._worker.log.connect(self.log)
+        self._worker.paused.connect(self._on_worker_paused)
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.finished.connect(self._thread.quit)
         self._thread.start()
@@ -157,6 +200,7 @@ class BatchController(QtCore.QObject):
                     self._retired_threads.append(old)
 
     def _on_worker_finished(self, result) -> None:
+        self._pause_state = ""
         if self._current_index < 0 or self._current_index >= len(self.queue.jobs()):
             return
         job = self.queue.jobs()[self._current_index]

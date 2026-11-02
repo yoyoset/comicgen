@@ -21,18 +21,19 @@ _LANG_NAMES = {"ja": "日文", "en": "英文", "zh": "中文", "other": "原文�
 
 _SAKURA_SYS = (
     "你是一个轻小说翻译模型，可以流畅通顺地以日本轻小说的风格将日文翻译成简体中文，"
-    "并联系上下文正确使用人称代词，不要擅自脱离原文情节。"
+    "并联系上下文正确使用人称代词，不擅自添加原文中没有的代词。"
 )
 
 _LLM_SYS_TMPL = (
     "你是专业的漫画翻译。把给定的{src}漫画台词翻译成{dst}。"
     "要求：口语自然、符合漫画语境；保留原文语气和情绪；"
-    "拟声词可意译；不要输出任何解释。"
+    "拟声词可意译；不要输出任何解释。/no_think"
 )
 
 # 实测（493 页杂志一次真实运行）：162 个区域的 translated_text 是提示词模板本身被
-# 当成译文抹字重绘到了页面上。这些子串取自 _batch_prompt/_single_prompt 的字面量，
-# 一旦改了提示词措辞要同步改这里——test_translate_batch.py 有防漂移断言。
+# 当成译文抹字重绘到了页面上。这些子串取自 llm 引擎（BaseTranslator）和 Sakura 引擎
+# （SakuraTranslator 的官方格式）的两套提示词字面量，一旦改了提示词措辞要同步改这里
+# ——test_translate_batch.py 有防漂移断言。
 _ECHO_MARKERS = (
     "仅供理解语境",
     "只输出译文",
@@ -40,11 +41,53 @@ _ECHO_MARKERS = (
     "不要合并不要遗漏",
     "把下面这句话翻译成",
     "把下列编号文本逐条翻译成",
+    "将下面的日文文本翻译成中文",
 )
 
 
+def _strip_think_block(content: str) -> str:
+    """剥掉混合思考模型可能漏出的  thinking... response 块。
+
+    纯函数：Qwen3-14B（llm 引擎）是混合思考/非思考模型，system_prompt 里的 /no_think
+    是软开关、不保证 100% 生效，兜底在这里把推理过程从译文里过滤掉，避免它被当成
+    译文抹字重绘到页面上。实测（2026-08-25 真实模型）：Qwen3-14B 实际输出用
+    `` 标签（5 字母 think，不是 thinking）——旧正则写的是 ``，从未匹配过
+    真实输出、剥不掉思考块；这里兼容两种写法。
+    """
+    return re.sub(r" ?< ?think(?:ing)?>.*? ?< ?/think>", "", content, flags=re.DOTALL).strip()
+
+
+def _has_degenerate_repetition(text: str, min_repeat: int = 3) -> bool:
+    """退化信号：一条译文里同一短句重复 >= min_repeat 次。
+
+    llama.cpp 低量化模型（Sakura IQ4XS 实测）在输入退化（杂志页的垃圾 OCR）或
+    长上下文下会进入重复循环，把一条译文打成 "X。X。X。" 或无标点的 "XXXX" 连写、
+    一路吃满 max_tokens（实测：493 页杂志里 328.JPEG 一条垃圾输入循环出 1500+
+    字符的重复文本）。repeat_penalty 只是缓解，不是保证（1.1 下仍偶有短循环）——
+    这里是输出校验的最终兜底：命中即按失败处理落空串，下游保留原文不抹字、
+    校对页列进「需要注意」。
+
+    保守阈值（避免误伤漫画里的合法强调重复）：重复短句至少 3 字且出现 >= 3 次；
+    "加油！加油！" "哈哈哈哈" 这类 1-2 字重复不受影响。纯函数，不依赖模型。
+    """
+    parts = [p.strip() for p in re.split(r"[。！？!?；;，,、…]+", text) if len(p.strip()) >= min_repeat]
+    counts: dict[str, int] = {}
+    for p in parts:
+        counts[p] = counts.get(p, 0) + 1
+    if any(c >= min_repeat for c in counts.values()):
+        return True
+    # 无标点的连写退化（"这样这样这样…"）：查相邻重复窗口
+    compact = re.sub(r"[。！？!?；;，,、…\s]+", "", text)
+    for w in range(min_repeat, min(10, len(compact) // min_repeat) + 1):
+        for i in range(len(compact) - w * min_repeat + 1):
+            seg = compact[i : i + w]
+            if seg * min_repeat == compact[i : i + w * min_repeat]:
+                return True
+    return False
+
+
 def _is_failed_translation(source: str, output: str) -> bool:
-    """明显失败的译文：空白 / 回显了提示词模板 / 原样吐回原文。
+    """明显失败的译文：空白 / 回显了提示词模板 / 原样吐回原文 / 重复退化。
 
     纯函数，不依赖模型。判为失败的译文由调用方落成空字符串——下游
     select_drawable_regions（runner.py）会保留原文不抹除，校对页会列进
@@ -56,6 +99,12 @@ def _is_failed_translation(source: str, output: str) -> bool:
     if any(marker in stripped for marker in _ECHO_MARKERS):
         return True
     if stripped == source.strip():
+        return True
+    if _has_degenerate_repetition(stripped):
+        return True
+    # 退化循环的另一个特征：输出长度暴涨（循环直到吃满 max_tokens）。
+    # 4 倍 + 100 的宽阈值只拦明显病态的长文，正常译文 1~2 倍不误伤。
+    if len(stripped) > len(source) * 4 + 100:
         return True
     return False
 
@@ -139,7 +188,7 @@ class BaseTranslator:
             est = sum(self._est_output_tokens(t) for t in chunk_texts)
             max_tokens = self._max_tokens_for(est, self._OUTPUT_TOKEN_HEADROOM)
             raw = call_llm(self._batch_prompt(chunk_texts, cfg), max_tokens)
-            parsed = self._parse_numbered(raw, len(chunk))
+            parsed = self._parse_batch(raw, len(chunk))
             for pos, gi in enumerate(chunk):
                 val = parsed[pos]
                 if val is not None and not _is_failed_translation(texts[gi], val):
@@ -215,6 +264,26 @@ class BaseTranslator:
                 break
             trusted = i
         return [items[i + 1] if i < trusted else None for i in range(n)]
+
+    @staticmethod
+    def _parse_batch(raw: str, n: int) -> list[str | None]:
+        """批量输出解析钩子。BaseTranslator 默认是编号解析（llm 引擎用）；
+        SakuraTranslator 覆盖成官方多行格式的按行对齐解析。"""
+        return BaseTranslator._parse_numbered(raw, n)
+
+    @staticmethod
+    def _parse_plain_lines(raw: str, n: int) -> list[str | None]:
+        """Sakura 官方多行格式的解析：输出行数恰好等于输入行数才对齐，否则整体置 None。
+
+        官方格式没有编号，无法像 _parse_numbered 那样做前缀可信——行数一旦对不上
+        （合并/拆行）位置就不可信，宁可整块交给逐条重试，也不按错误位置静默渲染。
+        实测（12 页真实漫画对比）：官方格式行数对齐率远高于编号格式，这正是官方
+        训练目标（保持行数与原文一致），行数不匹配是少数情况，回退成本可控。
+        """
+        lines: list[str | None] = [ln.strip() for ln in raw.strip().splitlines() if ln.strip()]
+        if len(lines) != n:
+            return [None] * n
+        return lines
 
 
 class _LlamaGGUFTranslator(BaseTranslator):
@@ -329,24 +398,58 @@ class _LlamaGGUFTranslator(BaseTranslator):
         # content 可能为 None（模型只产出 reasoning/格式异常时），直接 .strip() 会炸——
         # 旧实现这个位置一旦崩溃，整页被 _run_stage 标成失败而不是走逐条重试。
         # 落成空串后 _parse_numbered 解析不出任何编号，自然进入逐条重试 + 输出校验。
-        return (content or "").strip()
+        return _strip_think_block((content or "").strip())
 
     def translate(self, texts: list[str], cfg: Config) -> list[str]:
         return self._translate_batch_llm(texts, cfg, self._call)
 
 
 class SakuraTranslator(_LlamaGGUFTranslator):
-    """本地 Sakura：日译中专用轻小说/漫画翻译模型。"""
+    """本地 Sakura：日译中专用轻小说/漫画翻译模型。
+
+    调用格式严格对齐官方 v1.0 README（实测对比 12 页真实漫画验证过：官方多行直连
+    格式的行数保持/退化率远优于编号批量格式——编号批量曾在一页上无限重复「哎呀」
+    吃满 max_tokens 导致该页 8 条失败 5 条）。官方 README 明示「使用非本项目提供的
+    prompt 格式不保证质量」，所以批量/单句/解析全部走官方格式，不复用 BaseTranslator
+    的编号批量。
+    """
 
     name = "sakura"
     system_prompt = _SAKURA_SYS
     temperature = 0.1
     top_p = 0.3
+    # 实验时曾按官方 README 改成 1.0，实测回归（2026-08-25，493 页杂志）：Sakura
+    # IQ4XS 量化在输入退化（垃圾 OCR）时 1.0 会退化成重复循环、输出暴涨到 1500+
+    # 字符；1.1 在同输入下回落到 ~130 字符且无循环。1.1 是基类的默认值、也是量化
+    # 模型的既有缓解手段，恢复它（官方 1.0 的推理参数前提是更高精度的量化）。
+    repeat_penalty = 1.1
 
     def __init__(self, cfg: Config):
         if cfg.source_lang != "ja":
             raise InputError("Sakura 为日文专用模型，源语言非日文请改用通用本地引擎（llm）")
         super().__init__(cfg)
+
+    @staticmethod
+    def _batch_prompt(chunk_texts: list[str], cfg: Config) -> str:
+        """官方 v1.0 user prompt：多行原文直接 \\n 连接，不带编号。"""
+        return "将下面的日文文本翻译成中文：" + "\n".join(chunk_texts)
+
+    @staticmethod
+    def _single_prompt(texts: list[str], i: int, cfg: Config) -> str:
+        """逐条兜底翻译：官方单句格式 + 前后一句原文作上下文。"""
+        before = texts[i - 1] if i > 0 else ""
+        after = texts[i + 1] if i < len(texts) - 1 else ""
+        ctx = ""
+        if before or after:
+            ctx = (
+                f"（上下文，仅供理解语境，不要翻译）前一句：{before or '（无）'}；"
+                f"后一句：{after or '（无）'}\n"
+            )
+        return f"{ctx}将下面的日文文本翻译成中文：{texts[i]}"
+
+    @staticmethod
+    def _parse_batch(raw: str, n: int) -> list[str | None]:
+        return SakuraTranslator._parse_plain_lines(raw, n)
 
 
 class GeneralLLMTranslator(_LlamaGGUFTranslator):

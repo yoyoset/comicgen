@@ -34,6 +34,8 @@ class AppSettings:
     det_threshold: float = 0.3
     # ---- 目标语言（当前仅简体中文，预留） ----
     target_lang: str = "简体中文"
+    # ---- 任务完成后处理 ----
+    cleanup_intermediate: bool = False  # 成功后清理中间产物，只留最终交付物（无法再校对/续跑）
     # ---- 记忆 ----
     last_input_dir: str = ""
     last_output_dir: str = ""
@@ -130,6 +132,7 @@ class AppSettings:
             max_font_size=self.max_font_size,
             device=self.device,
             pdf_dpi=self.pdf_dpi,
+            cleanup_intermediate=self.cleanup_intermediate,
         )
 
 
