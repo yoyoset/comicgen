@@ -24,12 +24,11 @@
 | llama-cpp-python | MIT |
 | rarfile | ISC |
 
-## ⚠️ 已知的许可张力（未解决，需要维护者决定）
+## 关于 PyMuPDF（AGPL-3.0）
 
-**PyMuPDF 是 AGPL-3.0。** 本仓库源码是 MIT，仅发布源码时没有冲突；但**把 PyMuPDF 一起打进 EXE 分发**，
-这个 EXE 整体就要满足 AGPL（提供对应源码、保留许可声明）。可选做法：
-1. 接受并在发布 EXE 时遵守 AGPL（附源码链接与许可文本）；
-2. 换掉 PyMuPDF（PDF 渲染改用别的库）；
-3. 向 Artifex 购买商业许可。
+本仓库只发布**源码**，不分发 EXE 和模型，使用者自行 `pip install` 依赖，因此本仓库本身不涉及分发 PyMuPDF。
+如果你**自己打包并分发**含 PyMuPDF 的 EXE，该分发包需要满足 AGPL-3.0（或改用 Artifex 商业许可 / 换掉 PyMuPDF）。
 
-在做出选择前，请不要把含 PyMuPDF 的 EXE 当作"MIT 软件"对外宣传。
+## 关于非商用模型
+
+默认日译中模型 Sakura-14B 为 CC BY-NC-SA 4.0（非商用）。本仓库不分发它，由使用者自行下载并遵守其条款。

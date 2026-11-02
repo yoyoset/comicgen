@@ -14,8 +14,8 @@
 
 **遗留 / 未验证**：
 - **EXE 未重新打包**（现有 EXE 仍用 7B）。打包前先删 `dist\comicgen\settings.json` 里 `model_files.sakura` 的旧绑定。
-- **PyMuPDF（AGPL）与 MIT 的张力未解决**，见 THIRD_PARTY_NOTICES.md；发布 EXE 前必须决定。
-- 还没有 CI；没有发布流程（tag / Release）；没有在干净环境验证 `pip install` 安装路径。
+- 定位为"只发框架（源码）"：不分发 EXE/模型，需要的模型与校验值见新增的 SETUP_FOR_AI.md（给使用者的 AI 助手照着装）。自行打包分发含 PyMuPDF（AGPL）的 EXE 时需注意，见 THIRD_PARTY_NOTICES.md。
+- 还没有 CI；没有在干净环境验证 `pip install` 安装路径（SETUP_FOR_AI.md 里的命令按 README 与本机环境整理，模型状态检查与 sample.zip 冒烟命令已实际跑过）。
 - Sakura-14B 为非商用许可。
 
 ## 2026-08-25 — 批量队列补上「暂停」+ BatchController 暴露 state
