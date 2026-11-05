@@ -10,32 +10,31 @@
 > 用默认配置（Sakura-14B）原样跑出，未做任何手工修图：7 处文字全部检出并译出，整页约 74 秒（含加载模型，RTX 3060 12GB）。原图与译文大图见 [`docs/demo/`](docs/demo/)。
 > **能看到的瑕疵**：第三格译文开头多出一个「；第一格竖排气泡里"……！"挤在一起；"起動シーケンス"被译成"启动程序"，偏直译。真实漫画页的效果请自己拿一话试。
 
-> **本仓库只提供框架（源码）**，不含模型/二进制/EXE。要下载什么、放哪、怎么校验，见 [SETUP_FOR_AI.md](SETUP_FOR_AI.md)（写给你的 AI 助手看的清单）。
+> **Windows 安装包**见 [Releases](https://github.com/yoyoset/comicgen/releases)（约 0.38GB，只含 CPU 运行框架，不含模型）。
+> 从源码装：要下载什么、放哪、怎么校验，见 [SETUP_FOR_AI.md](SETUP_FOR_AI.md)（写给你的 AI 助手看的清单）。
 
-**一句话安装**：克隆本仓库，把下面这句话连同 `SETUP_FOR_AI.md` 一起交给你的 AI 助手（Claude Code / Codex 等）——
+**源码一句话安装**：克隆本仓库，把下面这句话连同 `SETUP_FOR_AI.md` 一起交给你的 AI 助手（Claude Code / Codex 等）——
 
 > 按 SETUP_FOR_AI.md 把 comic-gen 在这台机器上装好，下载清单里的模型并核对 sha256，最后跑完第 3 节的三项验证再告诉我结果。
 
 ## 快速开始
 
-### 方式一：EXE（免装环境）
+### 方式一：安装包（免装环境）
 
-双击 `dist\comicgen\comicgen-ui.exe`（首次启动稍慢），原生窗口打开。**首次运行会弹出一个向导**，
-确认模型存放目录——如果你已经用别的工具（或本机的 subgen 项目）下载过 Sakura/Qwen 之类的模型，
-把目录指向那个位置即可直接复用，不用重新下载；弹窗会列出哪些模型已经就位、还差多少。
+1. 从 [Releases](https://github.com/yoyoset/comicgen/releases) 下载 `comicgen-<版本>-win64-cpu.zip`（约 0.38GB），
+   解压到任意**有空间的**目录（GPU 组件装完后整个目录约 5.6GB），双击 `comicgen\comicgen-ui.exe`。
+2. **首次运行会弹出向导**，确认模型存放目录——如果你已经用别的工具（或本机的 subgen 项目）下载过 Sakura/Qwen 之类的
+   模型，把目录指向那个位置即可直接复用；弹窗会列出哪些模型已经就位、还差多少。缺的模型去「模型管理」页下载。
+3. **有 NVIDIA 显卡**：到「组件」页点「下载并安装 GPU 组件」（约 3.1GB 下载，安装后约 4.8GB），装完点「重启程序以启用」。
+   **不用另外装 CUDA**——组件自带 CUDA 12.4 运行库（PyTorch / llama.cpp 官方构建），只需要较新的 NVIDIA 驱动。
+   下载有进度、可取消、断网后再点会从断点继续，每个文件都核对 SHA256；官方源连不上会自动换国内镜像。
+   没有 N 卡也能用，只是全部走 CPU，本地 14B 翻译模型会非常慢。
 
-每个模型也可以单独指定路径，去「模型管理」页逐项「定位…」。
+排障：`comicgen-ui.exe --self-check` 会把"本次用的是哪份 torch、CUDA 能不能用"写进同目录的 `comicgen.log`。
 
-自己打包：
-
-```powershell
-.\scripts\build_exe.ps1
-```
-
-这个脚本只替换 `comicgen-ui.exe` 和 `_internal\`，不碰 `dist\comicgen\` 下的 `settings.json` /
-日志 / 用户模型——重新打包不会丢配置也不会动模型（模型现在不放在这个目录里）。
-直接跑 `python -m PyInstaller build_exe.spec` 也可以，但 `dist\comicgen` 会被 `--clean` 整个清空，
-下次要靠这个向导重新走一遍（无害，只是麻烦），所以推荐用脚本。
+自己打包：发布用的 CPU 安装包用 `.\.venv-cpu\Scripts\python.exe scripts\build_release.py`（见 [HANDOFF.md](HANDOFF.md)）；
+本机自用的整包（带 CUDA，约 5.9GB）用 `.\scripts\build_exe.ps1`——这个脚本只替换 `comicgen-ui.exe` 和 `_internal\`，
+不碰 `dist\comicgen\` 下的 `settings.json` / 日志 / 用户模型。
 
 ### 方式二：源码运行
 
@@ -67,7 +66,7 @@ python -m venv .venv
 EXE——校验只查文件头确认是 GGUF，不卡任何具体模型的字节数。`sakura` 不支持这样换，它的
 提示词模板是照着 Sakura 官方格式写死的，换成别的模型权重结构不兼容会直接跑不起来。
 
-GPU 加速需 CUDA 12.4 运行时（安装 CUDA Toolkit 12.4 或确保 `cudart64_12.dll` 等可被找到）：
+源码运行时，本地翻译引擎的 GPU 版轮子这样装（它用的 CUDA 12.4 运行库借用 GPU 版 torch 自带的那份，不用另装 CUDA Toolkit）：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip uninstall llama-cpp-python -y

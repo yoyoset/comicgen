@@ -1,5 +1,8 @@
 # AGENTS.md — comic-gen
 
+> **接手本项目先读 [HANDOFF.md](HANDOFF.md)**：现状、构建/测试/打包/发布的确切命令、踩过的坑、
+> 已知未修问题、不要做的事。本文件是更细的设计约束。
+
 漫画自动翻译流水线：丢入 文件夹 / ZIP / CBZ / EPUB → 日文定位 → OCR → 翻译 → 抹字 → 译文贴回 → 同构输出。
 
 ## 环境
@@ -31,10 +34,14 @@ python -m venv .venv
 .\.venv\Scripts\python.exe scripts\make_sample.py
 .\.venv\Scripts\python.exe scripts\make_sample_epub.py
 
-# 打包 EXE（产物 dist\comicgen\comicgen-ui.exe，约 5 分钟）
+# 打包 EXE（本机自用：CUDA 版 .venv，产物 dist\comicgen\comicgen-ui.exe，约 5.9G，约 5 分钟）
 # 用脚本而不是直接跑 PyInstaller：脚本只换 exe 本体 + _internal\，
 # dist\comicgen\ 下的 settings.json/日志/用户模型全程不动。
 .\scripts\build_exe.ps1
+
+# 打包发布用的 CPU 版安装包（.venv-cpu，产物 dist\release\comicgen-<版本>-win64-cpu.zip）
+# GPU 部分由程序「组件」页首次运行下载，见 HANDOFF.md 与 core/gpu_components.py
+.\.venv-cpu\Scripts\python.exe scripts\build_release.py
 ```
 
 ## 结构
@@ -251,7 +258,8 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 ## 已知待办 / 局限
 
 - 真实漫画批量测试较少；检测阈值/掩码膨胀参数可能需调（`Config.det_threshold`，已可在设置页调）。
-- llama-cpp-python 的 GPU 轮子需要匹配的 CUDA 12.4 运行时，见 README。
+- llama-cpp-python 的 GPU 轮子需要匹配的 CUDA 12.4 运行时：开发态借用 .venv 里 GPU 版 torch/lib，
+  发布版借用「组件」页下载的 GPU 版 torch/lib（`pipeline/_cuda_runtime.py` 用 find_spec 跟随实际导入的那份）。
 - 竖排标点/数字未做体位旋转；SFX 拟声词无专项处理。
 - 磁盘冗余（同机与 subgen 共享缓存产生的重复文件、失败下载残留）本轮只做了查重/软删除入口，未清理，
   详见项目 memory `offline-and-model-sharing`。

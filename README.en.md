@@ -8,7 +8,9 @@ Drop in a manga folder / ZIP / CBZ / EPUB / PDF. It runs **text detection → OC
 
 > The image above is an **original synthetic page** (characters and dialogue are original to this repo, drawn by [`scripts/make_demo_page.py`](scripts/make_demo_page.py); crude, and not a real manga page, to avoid copyright issues). It was run with the default setup (Sakura-14B) with no manual retouching: all 7 text regions were detected and translated, about 74 s for the page including model loading (RTX 3060 12 GB). Full-size original and output are in [`docs/demo/`](docs/demo/). **Visible flaws**: a stray 「 opens the translation in panel 3, the "...!" in the vertical bubble of panel 1 is cramped, and "起動シーケンス" came out as a rather literal "启动程序". Try it on a real chapter to judge for yourself.
 
-> **This repo ships the framework (source code) only.** No models, binaries or EXE. What to download, where to put it and how to verify it is in [SETUP_FOR_AI.md](SETUP_FOR_AI.md) (written for your AI coding assistant; the file is in Chinese but the commands, URLs, sizes and sha256 values are exact).
+> **Windows build**: [Releases](https://github.com/yoyoset/comicgen/releases) has `comicgen-<version>-win64-cpu.zip` (about 0.38 GB, CPU runtime only, no models). Unzip, run `comicgen\comicgen-ui.exe`. With an NVIDIA card, open the **组件 (Components)** tab and install the GPU components (about 3.1 GB download, 4.8 GB on disk): official PyTorch cu124 and llama-cpp-python cu124 builds, SHA256-checked, resumable. No separate CUDA install is needed, only a recent NVIDIA driver.
+>
+> **From source**: what to download, where to put it and how to verify it is in [SETUP_FOR_AI.md](SETUP_FOR_AI.md) (written for your AI coding assistant; the file is in Chinese but the commands, URLs, sizes and sha256 values are exact).
 
 **One-line install:** clone the repo, then give your AI assistant (Claude Code, Codex, ...) `SETUP_FOR_AI.md` with this prompt:
 

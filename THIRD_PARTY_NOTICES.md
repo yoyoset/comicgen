@@ -26,8 +26,20 @@
 
 ## 关于 PyMuPDF（AGPL-3.0）
 
-本仓库只发布**源码**，不分发 EXE 和模型，使用者自行 `pip install` 依赖，因此本仓库本身不涉及分发 PyMuPDF。
-如果你**自己打包并分发**含 PyMuPDF 的 EXE，该分发包需要满足 AGPL-3.0（或改用 Artifex 商业许可 / 换掉 PyMuPDF）。
+从 0.4.0 起 GitHub Release 提供 Windows 安装包（`comicgen-<版本>-win64-cpu.zip`），包内含 PyMuPDF。
+因此**安装包作为整体按 AGPL-3.0 分发**：对应的完整源码就是本仓库同版本 tag（本项目自身代码为 MIT，与 AGPL 兼容），
+`LICENSE` 与本文件随安装包一起分发。只用源码、自己 `pip install` 依赖的使用者不受此影响。
+如果你自己改了代码再打包分发，同样需要公开对应源码（或改用 Artifex 商业许可 / 换掉 PyMuPDF）。
+
+## GPU 组件（程序内「组件」页按需下载，不随安装包分发）
+
+| 组件 | 来源 | 许可 |
+| :--- | :--- | :--- |
+| torch 2.6.0+cu124（含 NVIDIA CUDA 12.4 / cuDNN 9 运行库） | download.pytorch.org 官方 wheel | BSD-3-Clause；随附的 NVIDIA 库按 NVIDIA 再分发条款 |
+| torchvision 0.21.0+cu124 | download.pytorch.org 官方 wheel | BSD-3-Clause |
+| llama-cpp-python 0.3.34 cu124 | abetlen/llama-cpp-python GitHub Release | MIT |
+
+程序直接从上游下载并核对 SHA256，本项目不转存这些文件。
 
 ## 关于非商用模型
 

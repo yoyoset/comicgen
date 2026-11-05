@@ -3,6 +3,25 @@
 项目阶段成果记录。2026-08 之前的变更以 git 提交历史为准（提交信息即当时的记录）；
 之后按节记录每个阶段做了什么、关键依据、遗留事项。
 
+## 2026-11-05 — 0.4.0：Windows 安装包（CPU 框架）+ GPU 组件首次运行下载
+
+**做了什么**：
+- 发布用安装包只带 CPU 运行框架（`scripts/build_release.py`，在独立的 `.venv-cpu` 里构建）：zip 0.38 GB，解压 1.12 GB。
+- 新增「组件」页：有 N 卡的用户一键下载 GPU 组件（PyTorch 2.6.0 cu124、torchvision 0.21.0 cu124、llama-cpp-python 0.3.34 cu124
+  官方 wheel，共 3.07 GB，解包 4.78 GB），带进度/取消/断点续传/镜像回退/SHA256 强校验/失败原因/重试；装完重启生效。
+  不需要另装 CUDA，只需要 NVIDIA 驱动。
+- 修复：LaMa 在 CPU 版 torch 上加载失败（整页抹字失败、交付物回退原图）。
+- EXE 新增 `--self-check` / `--install-gpu-components` / `--cli`（无界面验收与排障）。
+
+**依据**：旧 CUDA 整包 5.9 GB（torch 3.6 GB，其中 CUDA 库约 3.3 GB；ggml-cuda.dll 902 MB），超过 GitHub Release 单文件 2 GB 上限；
+pip 装的 torch 自带 CUDA 库、不认系统 CUDA，"让用户装 CUDA"省不掉体积。干净解压的安装包上实测（两轮）：真实联网安装 GPU 组件 179 s / 283 s；
+之后 `--cli` 用 Sakura-14B 翻译 `tests/sample.zip` 1 页 65 s（冷启动）/ 31 s（模型文件已在系统缓存），显存峰值约 11.9 GB（RTX 3060 12GB，空载约 1.9–2.0 GB）。
+纯 CPU 路径（不装组件）用 mock 翻译跑通完整流程 20 s。
+细节见 [HANDOFF.md](HANDOFF.md)。
+
+**遗留 / 未验证**：真实窗口里点「组件」页未人工验收（离屏脚本和 EXE 无界面开关验过同一路径）；纯 CPU 跑 Sakura-14B 耗时未测；
+旧驱动（<551）未测；仓库公开前有一处历史路径待用户决定（见 HANDOFF §6）。
+
 ## 2026-11-02 — 0.3.0:日译中默认换 Sakura-14B + 产品化第一步
 
 **做了什么**：`sakura` 模型由 Sakura-7B-Qwen2.5-v1.0 换成 Sakura-14B-Qwen3-v1.5（iq4xs，8_180_361_440 字节，
