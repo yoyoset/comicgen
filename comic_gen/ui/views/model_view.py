@@ -81,6 +81,14 @@ class ModelView(QtWidgets.QWidget):
         self.status_lbl.setStyleSheet("color: gray;")
         lay.addWidget(self.status_lbl)
 
+        # 下载进度：下载器本身没有进度回调，数字来自 MainWindow 对下载目录字节数的旁路估算
+        self.dl_lbl = QtWidgets.QLabel()
+        self.dl_bar = QtWidgets.QProgressBar()
+        self.dl_bar.setRange(0, 1000)
+        for w in (self.dl_lbl, self.dl_bar):
+            w.setVisible(False)
+            lay.addWidget(w)
+
         self.log_edit = QtWidgets.QPlainTextEdit()
         self.log_edit.setReadOnly(True)
         self.log_edit.setMaximumHeight(90)
@@ -202,6 +210,23 @@ class ModelView(QtWidgets.QWidget):
 
     def missing_keys(self) -> list[str]:
         return [k for k, st in self._statuses.items() if not st.is_ready]
+
+    def set_download_progress(self, label: str, done: int, expected: int):
+        """expected 为 0 表示不知道总量（只显示已下载字节数，进度条转圈）。"""
+        self.dl_lbl.setVisible(True)
+        self.dl_bar.setVisible(True)
+        if expected > 0:
+            frac = min(done / expected, 0.99)  # 估算总量可能偏小，没下完别显示 100%
+            self.dl_bar.setRange(0, 1000)
+            self.dl_bar.setValue(int(frac * 1000))
+            self.dl_lbl.setText(f"正在下载 {label}：{done / 1e6:,.0f} / 约 {expected / 1e6:,.0f} MB（{frac:.0%}）")
+        else:
+            self.dl_bar.setRange(0, 0)
+            self.dl_lbl.setText(f"正在下载 {label}：已下载 {done / 1e6:,.0f} MB")
+
+    def clear_download_progress(self):
+        self.dl_lbl.setVisible(False)
+        self.dl_bar.setVisible(False)
 
     def show_status(self, text: str):
         self.log_edit.appendPlainText(text)

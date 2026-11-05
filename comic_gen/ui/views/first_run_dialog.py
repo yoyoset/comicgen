@@ -1,26 +1,38 @@
-"""首次运行弹窗：确认模型目录、看一眼哪些模型已经在本机、还差多少。
+"""首次运行弹窗：一屏看清"要下什么、多大、放哪"，点「开始下载」就开始。
 
-只在第一次启动（AppSettings.setup_completed == False）时出现。"开始使用"和
+只在第一次启动（AppSettings.setup_completed == False）时出现。"开始下载/开始使用"和
 "稍后再说"都会把这个标记置位——用户跳过了也不会每次启动都被打断。
+
+2026-11-05 之前这里只能选目录、看状态，汇总写"还需下载约 7.6 GB … 大小见上表"（表里其实没有
+大小列，而且 7.6 是 GiB、只算了 Sakura 一项），也没有下载按钮——用户得自己找到「模型管理 →
+补全全部缺失」和「组件」页。现在：表里每行有勾选框和大小，GPU 组件是一个勾选项并写明装在哪，
+主按钮直接开始下载；真正的下载仍走主窗口里既有的 ModelWorker / ComponentWorker（这个弹窗只
+产出一个下载计划 download_plan()，不自己下载），关窗后主窗口切到对应页面显示进度。
 """
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from PySide6 import QtCore, QtWidgets
 
-from ...core.manifest import LAYOUT_FILE, MODEL_MANIFEST
-from ...core.model_locator import (
-    STATUS_MISSING,
-    ModelStatus,
-    plan_download_bytes,
-    status_text,
-)
+from ...core import first_run_plan as frp
+from ...core import gpu_components as gc
+from ...core.manifest import MODEL_MANIFEST
+from ...core.model_locator import STATUS_MISSING, ModelStatus, status_text
 from ...core.paths import detect_default_model_dir, probe_writable
 
+_COL_CHECK, _COL_LABEL, _COL_PURPOSE, _COL_SIZE, _COL_STATUS = range(5)
 
-def _human_gb(n: int) -> str:
-    return f"{n / (1024 ** 3):.1f} GB"
+
+def _free_bytes(p: Path) -> int | None:
+    probe = p
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    try:
+        return shutil.disk_usage(probe).free
+    except OSError:
+        return None
 
 
 class FirstRunDialog(QtWidgets.QDialog):
@@ -28,52 +40,86 @@ class FirstRunDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.settings = settings
         self.setWindowTitle("欢迎使用 comic-gen")
-        self.setMinimumWidth(640)
+        self.setMinimumWidth(760)
         self._statuses: dict[str, ModelStatus] = {}
         self._scan_thread: QtCore.QThread | None = None
         self._scan_worker = None
+        self._plan: tuple[list[str], bool] = ([], False)
+        self._offer_gpu = gc.has_nvidia_driver() and not gc.pack_status().is_ready
         self._build()
         self._start_scan()
 
+    # ------------------------------------------------------------ 搭建
     def _build(self):
         lay = QtWidgets.QVBoxLayout(self)
 
         intro = QtWidgets.QLabel(
-            "模型可以跨项目复用——如果你已经用别的工具下载过 Sakura/Qwen 之类的模型，"
-            "把下面的目录指向那个位置即可直接复用，不用重新下载。"
+            "首次使用需要下载模型。下面勾选的会在点「开始下载」后自动下载，进度在主窗口里显示。<br>"
+            "已经用别的工具下载过 Sakura/Qwen 之类的模型？把「模型保存到」指向那个目录，找到的就不用重下。"
         )
         intro.setWordWrap(True)
+        intro.setTextFormat(QtCore.Qt.RichText)
         lay.addWidget(intro)
 
         row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel("模型目录"))
+        row.addWidget(QtWidgets.QLabel("模型保存到"))
         self.dir_edit = QtWidgets.QLineEdit(detect_default_model_dir())
         self.dir_edit.editingFinished.connect(self._start_scan)
         row.addWidget(self.dir_edit, 1)
-        browse_btn = QtWidgets.QPushButton("浏览…")
+        browse_btn = QtWidgets.QPushButton("更改…")
         browse_btn.clicked.connect(self._pick_dir)
         row.addWidget(browse_btn)
         lay.addLayout(row)
 
-        self.table = QtWidgets.QTableWidget(len(MODEL_MANIFEST), 3)
-        self.table.setHorizontalHeaderLabels(["模型", "用途", "状态"])
+        self._keys = list(MODEL_MANIFEST)
+        self.table = QtWidgets.QTableWidget(len(self._keys), 5)
+        self.table.setHorizontalHeaderLabels(["下载", "模型", "用途", "大小", "状态"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QtWidgets.QHeaderView.Stretch)
-        self._keys = list(MODEL_MANIFEST)
-        self._status_items = {}
-        for row_i, key in enumerate(self._keys):
+        for col in (_COL_CHECK, _COL_LABEL, _COL_PURPOSE, _COL_SIZE):
+            header.setSectionResizeMode(col, QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(_COL_STATUS, QtWidgets.QHeaderView.Stretch)
+        self._check_items: dict[str, QtWidgets.QTableWidgetItem] = {}
+        self._status_items: dict[str, QtWidgets.QTableWidgetItem] = {}
+        for r, key in enumerate(self._keys):
             spec = MODEL_MANIFEST[key]
-            self.table.setItem(row_i, 0, QtWidgets.QTableWidgetItem(spec.label))
-            self.table.setItem(row_i, 1, QtWidgets.QTableWidgetItem(spec.purpose))
-            item = QtWidgets.QTableWidgetItem("检测中…")
-            self.table.setItem(row_i, 2, item)
-            self._status_items[key] = item
-        lay.addWidget(self.table, 1)
+            chk = QtWidgets.QTableWidgetItem()
+            chk.setFlags(QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled)
+            chk.setCheckState(QtCore.Qt.Unchecked)
+            self.table.setItem(r, _COL_CHECK, chk)
+            self._check_items[key] = chk
+            label = spec.label + ("" if spec.required else "（按需）")
+            self.table.setItem(r, _COL_LABEL, QtWidgets.QTableWidgetItem(label))
+            self.table.setItem(r, _COL_PURPOSE, QtWidgets.QTableWidgetItem(spec.purpose))
+            size_item = QtWidgets.QTableWidgetItem(frp.human_size(frp.approx_bytes(key)))
+            size_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            self.table.setItem(r, _COL_SIZE, size_item)
+            st_item = QtWidgets.QTableWidgetItem("检测中…")
+            self.table.setItem(r, _COL_STATUS, st_item)
+            self._status_items[key] = st_item
+        self.table.itemChanged.connect(lambda *_: self._update_summary())
+        # 表高贴合 6 行内容：之前给了 stretch，表下面留一大块空白，把汇总和按钮挤到很下面
+        self.table.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustToContents)
+        self.table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        lay.addWidget(self.table)
+
+        # GPU 组件：只在有 N 卡驱动且还没装时出现。装在程序目录（不是模型目录），写清楚。
+        self.gpu_chk: QtWidgets.QCheckBox | None = None
+        if self._offer_gpu:
+            self.gpu_chk = QtWidgets.QCheckBox(
+                f"下载 GPU 加速组件（约 {frp.human_size(gc.total_download_bytes())}，"
+                f"安装后占 {frp.human_size(gc.EXTRACTED_BYTES)}）")
+            self.gpu_chk.setChecked(True)
+            self.gpu_chk.toggled.connect(lambda *_: self._update_summary())
+            lay.addWidget(self.gpu_chk)
+            gpu_note = QtWidgets.QLabel(
+                f"检测到 NVIDIA 显卡。装在程序目录 {gc.components_root()}；不需要另装 CUDA，"
+                "装完重启程序生效。不装也能用，但全部走 CPU，翻译会非常慢。")
+            gpu_note.setWordWrap(True)
+            gpu_note.setStyleSheet("color: gray;")
+            lay.addWidget(gpu_note)
 
         self.summary_lbl = QtWidgets.QLabel()
         self.summary_lbl.setWordWrap(True)
@@ -84,27 +130,18 @@ class FirstRunDialog(QtWidgets.QDialog):
         self.warning_lbl.setWordWrap(True)
         lay.addWidget(self.warning_lbl)
 
-        # 安装包只带 CPU 框架：有 N 卡但还没装 GPU 组件时，首次运行就告诉用户去哪装。
-        from ...core import gpu_components as gc
-        if gc.has_nvidia_driver() and not gc.pack_status().is_ready:
-            gpu_lbl = QtWidgets.QLabel(
-                "检测到 NVIDIA 显卡：建议到「组件」页下载 GPU 加速组件"
-                f"（约 {gc.total_download_bytes() / 1e9:.1f} GB），否则全部走 CPU，翻译会非常慢。")
-            gpu_lbl.setWordWrap(True)
-            gpu_lbl.setStyleSheet("color: #1f6feb;")
-            lay.addWidget(gpu_lbl)
-
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch(1)
         self.later_btn = QtWidgets.QPushButton("稍后再说")
         self.later_btn.clicked.connect(self._on_later)
         btn_row.addWidget(self.later_btn)
-        self.start_btn = QtWidgets.QPushButton("开始使用")
+        self.start_btn = QtWidgets.QPushButton("开始下载")
         self.start_btn.setDefault(True)
         self.start_btn.clicked.connect(self._on_start)
         btn_row.addWidget(self.start_btn)
         lay.addLayout(btn_row)
 
+    # ------------------------------------------------------------ 扫描
     def _pick_dir(self):
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "选择模型目录", self.dir_edit.text())
         if d:
@@ -134,41 +171,75 @@ class FirstRunDialog(QtWidgets.QDialog):
     def _on_scan_done(self, statuses: dict, dupes: dict):
         self._statuses = statuses
         self.start_btn.setEnabled(True)
+        self.table.blockSignals(True)
         for key, st in statuses.items():
             item = self._status_items.get(key)
-            if not item:
+            chk = self._check_items.get(key)
+            if not item or not chk:
                 continue
-            if not st.is_ready and st.state == STATUS_MISSING:
-                item.setText("未找到")
-                continue
-            text, _ = status_text(st)
-            item.setText(text)
-
-        ready = sum(1 for s in statuses.values() if s.is_ready)
-        missing = [k for k, s in statuses.items() if not s.is_ready]
-        need_bytes = plan_download_bytes(missing)
-        extra = "、".join(MODEL_MANIFEST[k].label for k in missing
-                          if MODEL_MANIFEST[k].layout != LAYOUT_FILE)
-        parts = [f"已发现 {ready}/{len(statuses)} 个模型"]
-        if need_bytes:
-            parts.append(f"还需下载约 {_human_gb(need_bytes)}")
-        if extra:
-            parts.append(f"另需下载：{extra}（大小见上表）")
-        self.summary_lbl.setText("　·　".join(parts) + "。")
-
-        target = Path(self.dir_edit.text().strip() or ".")
-        try:
-            import shutil
-            free = shutil.disk_usage(target if target.exists() else target.anchor or ".").free
-            if need_bytes and free < need_bytes:
-                self.warning_lbl.setText(
-                    f"⚠ 目标磁盘剩余空间可能不够：预计需要约 {_human_gb(need_bytes)}，"
-                    f"当前剩余约 {_human_gb(free)}。"
-                )
+            if st.is_ready:
+                text, _ = status_text(st)
+                item.setText(text)
+                chk.setCheckState(QtCore.Qt.Unchecked)
+                chk.setFlags(QtCore.Qt.ItemIsUserCheckable)  # 已就绪：不可勾（灰掉）
             else:
-                self.warning_lbl.setText("")
-        except OSError:
-            self.warning_lbl.setText("")
+                item.setText("未找到" if st.state == STATUS_MISSING else status_text(st)[0])
+                chk.setFlags(QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled)
+                chk.setCheckState(QtCore.Qt.Checked if frp.default_selected(key) else QtCore.Qt.Unchecked)
+        self.table.blockSignals(False)
+        self._update_summary()
+
+    # ------------------------------------------------------------ 汇总
+    def selected_model_keys(self) -> list[str]:
+        return [k for k in self._keys
+                if self._check_items[k].checkState() == QtCore.Qt.Checked
+                and not (self._statuses.get(k) and self._statuses[k].is_ready)]
+
+    def _gpu_selected(self) -> bool:
+        return bool(self.gpu_chk is not None and self.gpu_chk.isChecked())
+
+    def _update_summary(self):
+        if not self._statuses:
+            return
+        keys = self.selected_model_keys()
+        gpu = self._gpu_selected()
+        ready = sum(1 for s in self._statuses.values() if s.is_ready)
+        model_dir = self.dir_edit.text().strip() or "（默认 HF 缓存）"
+        lines = [f"已找到 {ready}/{len(self._statuses)} 个模型。"]
+        model_bytes = frp.total_bytes(keys)
+        if keys:
+            names = "、".join(MODEL_MANIFEST[k].label for k in keys)
+            lines.append(f"将下载模型：{names}，共约 {frp.human_size(model_bytes)} → 存到 {model_dir}")
+        if gpu:
+            lines.append(f"将下载 GPU 组件：约 {frp.human_size(gc.total_download_bytes())} → 装到 {gc.components_root()}")
+        if keys or gpu:
+            lines.append(f"合计下载约 {frp.human_size(model_bytes + (gc.total_download_bytes() if gpu else 0))}。")
+        else:
+            lines.append("没有勾选要下载的东西。缺的模型以后可以在「模型管理」页下载。")
+        self.summary_lbl.setText("<br>".join(lines))
+        self.start_btn.setText("开始下载" if (keys or gpu) else "开始使用")
+
+        # 磁盘空间：按盘汇总（模型目录和程序目录可能在不同盘，也可能同一块盘要两份加起来）
+        need: dict[str, int] = {}
+        if keys:
+            anchor = Path(self.dir_edit.text().strip() or Path.home()).anchor
+            need[anchor] = need.get(anchor, 0) + model_bytes
+        if gpu:
+            space = gc.check_disk_space()
+            gpu_need = space[0] if space else gc.EXTRACTED_BYTES + gc.total_download_bytes()
+            anchor = gc.components_root().anchor
+            need[anchor] = need.get(anchor, 0) + gpu_need
+        warns = []
+        for anchor, n in need.items():
+            free = _free_bytes(Path(anchor))
+            if free is not None and free < n:
+                warns.append(f"⚠ {anchor} 剩余 {frp.human_size(free)}，预计需要约 {frp.human_size(n)}，空间可能不够。")
+        self.warning_lbl.setText("\n".join(warns))
+
+    # ------------------------------------------------------------ 提交
+    def download_plan(self) -> tuple[list[str], bool]:
+        """(要下载的模型 key 列表, 是否安装 GPU 组件)。只有点了「开始下载」才非空。"""
+        return self._plan
 
     def _commit(self):
         """把扫描结果落到真正的 settings：目录 + 已发现模型的绑定，都在这里一次性写。"""
@@ -187,6 +258,7 @@ class FirstRunDialog(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.warning(self, "目录不可用", err)
                 return
         self._commit()
+        self._plan = (self.selected_model_keys(), self._gpu_selected())
         self.accept()
 
     def _on_later(self):

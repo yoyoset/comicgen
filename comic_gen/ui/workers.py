@@ -132,6 +132,7 @@ class ModelWorker(QtCore.QObject):
 
     log = QtCore.Signal(str)
     finished = QtCore.Signal(str)
+    itemStarted = QtCore.Signal(str)  # 开始下载某个 key——主窗口据此旁路估算下载进度（core.first_run_plan）
 
     def __init__(self, settings: AppSettings, keys: list[str], do_download: bool,
                  cancel_event: threading.Event | None = None):
@@ -195,6 +196,7 @@ class ModelWorker(QtCore.QObject):
                     msgs.append(f"[缺] {spec.label}（{spec.approx_size}）：未下载（仅检查）")
                     continue
                 self.log.emit(f"({i}/{total}) 下载 {spec.label}（{spec.approx_size}）…")
+                self.itemStarted.emit(key)
                 try:
                     build(key)
                     # 下载把权重放进了磁盘，但 model_locator 的搜索结果缓存可能还停

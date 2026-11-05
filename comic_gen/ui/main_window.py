@@ -74,6 +74,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._c_thread: QtCore.QThread | None = None
         self._c_worker: ComponentWorker | None = None
         self._c_cancel_event: threading.Event | None = None
+        # 模型下载进度的旁路估算（core.first_run_plan.watched_bytes）：当前 key + 起始字节数
+        self._m_watch_key: str | None = None
+        self._m_watch_base = 0
+        self._m_watch_timer = QtCore.QTimer(self)
+        self._m_watch_timer.setInterval(1000)
+        self._m_watch_timer.timeout.connect(self._poll_model_download)
 
         self.translate_view = TranslateView()
         self.batch_view = BatchView()
@@ -103,10 +109,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_menu()
         self._build_status_bar()
         self._wire_signals()
+        first_run_plan: tuple[list[str], bool] = ([], False)
         if not self.settings.setup_completed:
-            FirstRunDialog(self.settings, self).exec()
+            dlg = FirstRunDialog(self.settings, self)
+            dlg.exec()
+            first_run_plan = dlg.download_plan()
         self._load_settings_into_views()
         self._restore_window_geometry()
+        if first_run_plan[0] or first_run_plan[1]:
+            # 首次运行弹窗点了「开始下载」：窗口显示出来之后再开工，用户直接看到进度
+            QtCore.QTimer.singleShot(300, lambda: self._start_first_run_downloads(*first_run_plan))
 
         QtCore.QTimer.singleShot(50, self._run_diagnostics)
 
@@ -552,6 +564,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._m_worker.moveToThread(self._m_thread)
         self._m_thread.started.connect(self._m_worker.run)
         self._m_worker.log.connect(self.model_view.show_status)
+        self._m_worker.itemStarted.connect(self._on_model_item_started)
+        self._set_tab_suffix(self.model_view, "下载中" if do_download else "")
         self._m_worker.finished.connect(self._on_model_done)
         self._m_worker.finished.connect(self._m_thread.quit)
         self._m_thread.start()
@@ -565,7 +579,54 @@ class MainWindow(QtWidgets.QMainWindow):
         if missing:
             self._start_model_worker(missing, True)
 
+    def _on_model_item_started(self, key: str):
+        from ..core.first_run_plan import watched_bytes
+
+        self._m_watch_key = key
+        self._m_watch_base = watched_bytes(key) or 0
+        self._poll_model_download()
+        self._m_watch_timer.start()
+
+    def _poll_model_download(self):
+        from ..core.first_run_plan import approx_bytes, watched_bytes
+
+        key = self._m_watch_key
+        if key is None:
+            return
+        now = watched_bytes(key)
+        label = MODEL_MANIFEST[key].label
+        if now is None:
+            self.model_view.set_download_progress(label, 0, 0)
+            return
+        done = max(0, now - self._m_watch_base)
+        self.model_view.set_download_progress(label, done, approx_bytes(key))
+
+    def _set_tab_suffix(self, view, suffix: str):
+        tabs = self.centralWidget()
+        i = tabs.indexOf(view)
+        if i < 0:
+            return
+        base = {self.model_view: "模型管理", self.components_view: "组件"}.get(view, tabs.tabText(i))
+        tabs.setTabText(i, f"{base}（{suffix}）" if suffix else base)
+
+    def _start_first_run_downloads(self, model_keys: list[str], install_gpu: bool):
+        """首次运行弹窗点了「开始下载」：两样同时开始，各自页面显示进度，页签标题带状态。"""
+        tabs = self.centralWidget()
+        if install_gpu:
+            self._start_component_worker()
+        if model_keys:
+            self._start_model_worker(model_keys, True)
+            tabs.setCurrentWidget(self.model_view)
+            if install_gpu:
+                self.model_view.show_status("GPU 加速组件在「组件」页同时下载，进度见该页签标题。")
+        elif install_gpu:
+            tabs.setCurrentWidget(self.components_view)
+
     def _on_model_done(self, text: str):
+        self._m_watch_timer.stop()
+        self._m_watch_key = None
+        self.model_view.clear_download_progress()
+        self._set_tab_suffix(self.model_view, "")
         self.model_view.show_status(text)
         self._start_scan_worker()  # 下载/检查完刷新一遍状态；同时会把 set_busy(False) 一起做了
 
@@ -662,10 +723,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._c_worker.moveToThread(self._c_thread)
         self._c_thread.started.connect(self._c_worker.run)
         self._c_worker.progress.connect(self.components_view.on_progress)
+        self._c_worker.progress.connect(
+            lambda stage, d, t: self._set_tab_suffix(self.components_view, f"{d / t:.0%}" if t else "安装中"))
+        self._c_worker.finished.connect(self._on_component_done)
         self._c_worker.log.connect(self.components_view.append_log)
         self._c_worker.finished.connect(self.components_view.on_finished)
         self._c_worker.finished.connect(self._c_thread.quit)
         self._c_thread.start()
+
+    def _on_component_done(self, ok: bool, message: str, technical: str):
+        self._set_tab_suffix(self.components_view, "需重启" if ok else "未完成")
+        self.status_lbl.setText(
+            "GPU 组件已装好，重启程序后生效（「组件」页有重启按钮）" if ok else f"GPU 组件安装失败：{message}")
 
     def _on_component_cancel(self):
         if self._c_cancel_event is not None:
