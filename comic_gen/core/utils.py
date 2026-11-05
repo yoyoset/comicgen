@@ -10,6 +10,14 @@ from pathlib import Path
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
+# 成品页的 JPEG 质量。实测（995×1515 的彩色漫画页，见 comic-gen 项目 2026-11-05 记录）：
+# 同一张图存 PNG 1.22 MB / JPEG q95 524 KB / q90 426 KB / q85 364 KB / q75 298 KB。
+# 之前成品页一律按 PNG 写盘、却沿用输入的 .jpg 文件名，一卷 299 页因此约 600 MB，
+# 比原图（688 MB，但每页 13 MP）几乎不省——"体积大"的根因是编码不是分辨率。
+# 取 90：字缘不糊，体积约为 PNG 的 1/3；subsampling=0（4:4:4）避免小字出现彩边。
+# 这是成品交付编码，不改中间产物以外的任何渲染逻辑（translated/ 里的图本身就是成品）。
+OUTPUT_JPEG_QUALITY = 90
+
 
 def natural_key(s: str):
     """自然数排序 key：page2 < page10。"""
@@ -61,20 +69,26 @@ def save_json(obj, path: Path):
     atomic_write_text(path, json.dumps(obj, ensure_ascii=False, indent=2))
 
 
-def atomic_save_image(image, path) -> None:
-    """把 PIL 图片原子写入 path（PNG）：同目录临时文件 + os.replace。
+def atomic_save_image(image, path, *, jpeg_quality: int = OUTPUT_JPEG_QUALITY) -> None:
+    """把 PIL 图片原子写入 path：同目录临时文件 + os.replace。
+
+    编码按**目标文件名后缀**决定，不是一律 PNG：JPEG 后缀存 JPEG（quality 见
+    OUTPUT_JPEG_QUALITY），其余存 PNG。旧实现无条件写 PNG，却把文件命名成输入的
+    .jpg，于是 CBZ 里出现"扩展名 jpg、内容是 PNG"的页——部分阅读器按后缀解码会直接
+    拒读，而且体积是无损 PNG 的 3 倍（见 OUTPUT_JPEG_QUALITY 注释）。
 
     pages.json 会在图片写完之后才把状态改成 rendered，所以坏图本身会随重跑自愈；
-    但进程被恰好杀在写盘中途时，translated/ 下会留一张截断的 PNG——校对画布的
+    但进程被恰好杀在写盘中途时，translated/ 下会留一张截断的图——校对画布的
     preview_path 优先取渲染图，这张坏图会让校对页显示一块破图，直到重跑覆盖它。
     用原子替换让"要么没有、要么完整"，不留下可被读到的半张图。
     """
     path = Path(path)
     ensure_dir(path.parent)
+    fmt, kwargs, payload = _image_save_plan(path, image, jpeg_quality)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as f:
-            image.save(f, format="PNG")
+            payload.save(f, format=fmt, **kwargs)
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -82,6 +96,23 @@ def atomic_save_image(image, path) -> None:
         except OSError:
             pass
         raise
+
+
+# JPEG 不能存带 alpha / 调色板的图，存之前要转 RGB（PNG 保持原样派生）。
+_JPEG_SUFFIXES = {".jpg", ".jpeg"}
+
+
+def _image_save_plan(path: Path, image, jpeg_quality: int):
+    """纯函数：给定目标路径和 PIL 图，决定 (格式, save 参数, 实际要写的图)。
+
+    抽出来是为了能单测"jpg 后缀真的写 JPEG、png 后缀真的写 PNG"——这正是之前
+    "扩展名与内容不符"那个 bug 的判据，用真实写到临时文件再读文件头来验证。
+    """
+    if path.suffix.lower() in _JPEG_SUFFIXES and jpeg_quality > 0:
+        if image.mode not in ("RGB", "L"):
+            image = image.convert("RGB")
+        return "JPEG", {"quality": jpeg_quality, "subsampling": 0, "optimize": True}, image
+    return "PNG", {}, image
 
 
 def load_json(path: Path):
