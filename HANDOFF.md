@@ -18,7 +18,7 @@
 manga-ocr / EasyOCR → 本地 GGUF 翻译（Sakura-14B 日译中 / 通用 Qwen3-14B，llama.cpp）→ LaMa 抹字 →
 排版贴回 → 同格式输出。全部本地推理，无 API Key。只在 Python 3.13 上开发测试过。
 
-**版本 0.4.1（2026-11-05）**，这一轮做的事：
+**版本 0.4.2（2026-11-05）**，这一轮做的事：
 
 - **分发方式改了**：安装包只带 CPU 运行框架（zip 0.38 GB，解压 1.12 GB），GPU 部分由程序「组件」页
   首次运行下载（上游官方 wheel，3.07 GB 下载，解包 4.78 GB）。之前的 CUDA 整包 5.9 GB，超过 GitHub Release
@@ -27,13 +27,16 @@ manga-ocr / EasyOCR → 本地 GGUF 翻译（Sakura-14B 日译中 / 通用 Qwen3
 - **0.4.1：首次运行弹窗重做**（用户反馈"弹出来了但没有地方开始下载"）：一屏列出每个模型的勾选框 + 大小 + 状态、
   「模型保存到 + 更改…」、GPU 组件勾选项（写明装在程序目录 `components\`）、逐行"下什么 → 存到哪"和合计，
   主按钮「开始下载」；点了以后主窗口同时启动模型下载和 GPU 组件安装，模型页有进度条，页签标题带状态。见 §4 第 11 条。
+- **0.4.2：修这个弹窗的布局**：程序目录/模型目录路径很长时，GPU 勾选框盖住表格最后两行（见 §5 坑 15）。
+  汇总和提示不再写完整路径（放进 tooltip）。
 - 仓库 `yoyoset/comicgen`：**已是 public**。交接给我时说是 private，但 2026-11-05 13:5x 推送前用 `gh repo view` 查到已经是
   PUBLIC（不是这一轮改的，events 里查不到何时切换）。全历史扫描结果见 §6（唯一一处问题路径已按用户要求从全部历史清除）。
-- **GitHub Release v0.4.1 是当前版本**：https://github.com/yoyoset/comicgen/releases/tag/v0.4.1
-  资产 `comicgen-0.4.1-win64-cpu.zip` 376,982,899 B，sha256 `2c111899d336cb48ea24f2934cc48c44ca4fad53b6160f1ba33081c9eb744393`，
-  外加 `.sha256` 文件（LF，`sha256sum -c` 可直接用）。未登录下回来 `sha256sum -c` OK，解压后 `--self-check` 与 mock 翻译（退出码 0）跑通。
-- v0.4.0（https://github.com/yoyoset/comicgen/releases/tag/v0.4.0，tag 指向 c4718d3）保留不删，标题和说明里标了"已被 0.4.1 取代"。
-  它的 zip 376,973,179 B，sha256 `91439ffc9fdf26f9180a8bfc623ff60de9ee51607bd5d909474ad800415afa06`。
+- **GitHub Release v0.4.2 是当前版本**：https://github.com/yoyoset/comicgen/releases/tag/v0.4.2
+  资产 `comicgen-0.4.2-win64-cpu.zip` 376,984,486 B，sha256 `b38a0018bb52d2dfb685409250679dfd326c0cc74a19dfd6b40b8ecfba224a4c`，
+  外加 `.sha256` 文件（LF，`sha256sum -c` 可直接用）。
+- 旧版都保留不删，标题和说明里标了"已被取代"：
+  - v0.4.1：zip 376,982,899 B，sha256 `2c111899d336cb48ea24f2934cc48c44ca4fad53b6160f1ba33081c9eb744393`（长路径下弹窗布局重叠）
+  - v0.4.0（tag 指向 c4718d3）：zip 376,973,179 B，sha256 `91439ffc9fdf26f9180a8bfc623ff60de9ee51607bd5d909474ad800415afa06`（首次运行没有下载按钮）
 - squareuncle.com 下载页**还没上架**（属于 SUBLOG 仓库那边的会话，不在本项目改）。
 - 产品排期总表在 `F:\my_ai\SUBLOG\video\weekly\2026-11-博客与产品排期.md`（不在本仓库，不进 git）。
   博客/下载页属于 SUBLOG 仓库，**不要在本项目会话里改 SUBLOG**。
@@ -160,6 +163,11 @@ export PYTHONIOENCODING=utf-8
 点「开始下载」之后的主窗口行为在离屏脚本里验过（切到模型管理页、真实下载 LaMa 进度条走到 99%、落盘 205,803,670 B），
 **没有在真实窗口里点过**。
 
+0.4.2（`E:\cg-042`）：zip 376,984,486 B。打包好的 EXE 截图 3 张（DPI aware PrintWindow，HF_HOME/TORCH_HOME 指向空目录）：
+程序放在深目录 + 模型目录很深，系统 150% 缩放（991×766 物理像素）与 `QT_SCALE_FACTOR=0.6667`（≈100%，668×529）各一张，
+加短路径 150% 一张——都是 6 行完整、GPU 勾选框在表格下方单独一行、无重叠、汇总 4 行。`--self-check` 退出码 1（CPU 态），
+`--cli` mock 翻译退出码 0（46 s）。
+
 ## 5. 踩过的坑（现象 → 原因 → 解决）
 
 1. **CPU 包翻译整页失败，交付物是原图**：`Could not run 'aten::empty_strided' with arguments from the 'CUDA' backend`，
@@ -183,14 +191,24 @@ export PYTHONIOENCODING=utf-8
 10. **`gh release create --target` 要完整 40 位提交哈希**，短哈希报 `Release.target_commitish is invalid`（HTTP 422）。
 11. **首次运行弹窗的表格只露出 4 行**（0.4.1 候选包真机截图发现，默认勾选的 LaMa 被藏掉）→ 用了 `AdjustToContents` +
     关竖向滚动条，算出来的高度不含全部行 → 在 `showEvent` 和扫描完成后按 `horizontalHeader().height() + verticalHeader().length()`
-    算死表高（commit 6debffb）。**离屏（offscreen）渲染发现不了这类问题**：offscreen 平台没有中文字体（全是方框）、行高也和真机不同。
-12. **截图要 DPI aware**：先 `SetProcessDPIAware()`，再 `GetWindowRect` + `PrintWindow(hwnd, dc, 2)`；不这样截，125% 缩放下
+    算死表高（commit 6debffb）——**这个修法本身也有问题，见坑 15**。**离屏（offscreen）渲染发现不了这类问题**：
+    offscreen 平台没有中文字体（全是方框）、行高也和真机不同。
+12. **截图要 DPI aware**：先 `SetProcessDPIAware()`，再 `GetWindowRect` + `PrintWindow(hwnd, dc, 2)`；不这样截，150% 缩放下
     只截到窗口左上角一块，会误以为界面没问题。PrintWindow 只读像素、不操作窗口，不需要 computer-use 授权。
 13. **旧弹窗的"还需下载约 7.6 GB … 大小见上表"是错的**：`plan_download_bytes` 只计 LAYOUT_FILE、`llm` 的 size_bytes 故意为 0，
     7.6 又是 GiB——实际只算了 Sakura 一项，表里也没有大小列。新代码用 `first_run_plan.total_bytes`，十进制。
 14. **从 Release 下回来校验失败、zip 打不开**（0.4.1 第一次下载：326 s 只拿到 32,193,852 B，curl 仍报 200）→ 网络中途断了，
     不是资产坏了（`gh release view --json assets` 的 digest 与本地一致）→ `curl -L -C - --retry 5 --retry-all-errors` 续传（206），
     45 s 补完、`sha256sum -c` OK。判断资产好坏先看 GitHub 的 digest，别急着重传。
+15. **0.4.1 弹窗：路径很长时 GPU 勾选框盖住表格最后两行**（另一会话 150% 缩放截图发现；我自己截图时路径短，没暴露）。
+    复现条件：程序目录和模型目录都很深（只加长模型目录不复现）。打印各控件 geometry 才看清原因：
+    (a) 扫描后对表格 `setMinimumHeight/setMaximumHeight`，表格自己变成 174 高（y=113..287），布局却仍按旧高度把勾选框摆在 y=214；
+    (b) 汇总和提示写了完整路径、各折成 3 行，内容高过窗口，默认 SizeConstraint 下 Qt 压缩布局。
+    修法（commit e6d4b88）：表格换成 `_FitTable`，`sizeHint`/`minimumSizeHint` 直接返回"表头 + 全部行 + 边框"，竖直 Fixed，
+    布局从 sizeHint 取尺寸；布局 `SetMinimumSize` 让窗口跟着内容长高；正文不写完整路径（放 tooltip）；
+    别调 `resizeColumnsToContents()`（会冲掉 Stretch 列，表格右边留空白）。
+    **验 UI 布局要用最坏数据**（很长的路径、很多行），在 150% 和 100%（`QT_SCALE_FACTOR=0.6667`）各截一张；
+    快速自检可以用源码在 windows 平台插件下实例化弹窗，两两比较控件 geometry 是否相交。
 
 ## 6. 已知但还没处理的问题
 
