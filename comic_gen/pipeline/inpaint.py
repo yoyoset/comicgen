@@ -10,21 +10,35 @@ from PIL import Image
 from ..core.models import Region
 
 
+def resolve_device(requested: str, cuda_available: bool) -> str:
+    """请求 cuda 但没有可用 CUDA 时退回 cpu——和 detect.ComicDetector 同一条规则。"""
+    return "cuda" if requested == "cuda" and cuda_available else "cpu"
+
+
 class Inpainter:
     def __init__(self, device: str = "cuda", model_path: str | None = None):
+        import torch
         from simple_lama_inpainting import SimpleLama
+        from simple_lama_inpainting.models.model import LAMA_MODEL_URL
+        from simple_lama_inpainting.utils import download_model
 
-        # simple_lama_inpainting 读 LAMA_MODEL 环境变量决定用哪个权重文件；
-        # 没绑定时必须 pop 掉，否则上一次运行/别的程序留下的同名变量会悄悄劫持这次加载。
-        if model_path:
-            os.environ["LAMA_MODEL"] = model_path
-        else:
-            os.environ.pop("LAMA_MODEL", None)
-
-        try:
-            self._lama = SimpleLama(device=device)
-        except TypeError:
-            self._lama = SimpleLama()
+        # 不走 SimpleLama.__init__：它 torch.jit.load(path) 不带 map_location，而 big-lama.pt
+        # 里的张量是在 CUDA 上存的——CPU 版 torch 加载直接报 "Could not run
+        # 'aten::empty_strided' with arguments from the 'CUDA' backend"（2026-11-05 在 CPU 安装包
+        # 上实测：--device cpu 也一样整页抹字失败）。以前只发 CUDA 整包，这条路径从没跑到过。
+        # 它也不做"请求 cuda 但没 CUDA"的回退，这里补上。
+        # LAMA_MODEL 环境变量曾用来给 SimpleLama 传路径；现在直接传，顺手清掉防止旧值劫持别的调用方。
+        os.environ.pop("LAMA_MODEL", None)
+        dev = resolve_device(device, torch.cuda.is_available())
+        path = model_path or download_model(LAMA_MODEL_URL)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"LaMa 模型文件不存在：{path}")
+        lama = SimpleLama.__new__(SimpleLama)
+        lama.model = torch.jit.load(path, map_location=dev)
+        lama.model.eval()
+        lama.device = torch.device(dev)
+        self.device = dev
+        self._lama = lama
 
     @staticmethod
     def _region_mask(gray: np.ndarray, r: Region, pad: int = 4) -> tuple[np.ndarray, np.ndarray, tuple]:
