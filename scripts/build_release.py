@@ -136,7 +136,9 @@ def make_zip(app: Path, ver: str) -> Path:
         while chunk := fh.read(1 << 20):
             h.update(chunk)
     digest = h.hexdigest()
-    (out.with_suffix(out.suffix + ".sha256")).write_text(f"{digest}  {out.name}\n", encoding="ascii")
+    # 必须是 LF：write_text 在 Windows 上会写成 CRLF，`sha256sum -c` 会把 \r 当成文件名一部分而失败
+    # （2026-11-05 从 Release 下回来校验时实测踩到）。
+    (out.with_suffix(out.suffix + ".sha256")).write_bytes(f"{digest}  {out.name}\n".encode("ascii"))
     print(f"sha256：{digest}")
     return out
 
