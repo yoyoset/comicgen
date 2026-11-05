@@ -12,6 +12,10 @@ class Config:
     translator: str = "sakura"  # sakura(本地，日译中，开箱即用) | llm(本地，多语言) | mock
     source_lang: str = "ja"  # ja | en | zh | other —— 决定 OCR 后端与推荐引擎
     target_lang: str = "简体中文"
+    # 专有名词译名表（原文 → 译名），例如 {"Hanamichi": "樱木花道"}。当前由 CLI
+    # `--glossary` 填充（设置页还没接），空表 = 不启用。见 pipeline/glossary.py：
+    # 翻译前先把原文里匹配上的名字换成既定译名，并整表塞进 llm 引擎的 system_prompt。
+    glossary: dict[str, str] = field(default_factory=dict)
     # 每个模型（manifest 键）到本地绝对路径的显式绑定，来自 AppSettings.model_files。
     # 未绑定的键走 core.model_locator 的自动搜索（本地缓存 → 联网下载兜底）。
     model_paths: dict[str, str] = field(default_factory=dict)

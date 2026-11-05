@@ -16,6 +16,7 @@ from ..core.model_locator import (
     resolve_status,
 )
 from ..infra.logging import logger
+from .glossary import apply_glossary, glossary_prompt
 
 _LANG_NAMES = {"ja": "日文", "en": "英文", "zh": "中文", "other": "原文语言"}
 
@@ -453,7 +454,11 @@ class SakuraTranslator(_LlamaGGUFTranslator):
 
 
 class GeneralLLMTranslator(_LlamaGGUFTranslator):
-    """本地通用 LLM：多语言（日/英/中/其它）漫画翻译，非日文场景的默认引擎。"""
+    """本地通用 LLM：多语言（日/英/中/其它）漫画翻译，非日文场景的默认引擎。
+
+    术语表（cfg.glossary）在这里接：Sakura 侧不接——日文原文里专有名词是汉字/假名，
+    拉丁字母的 OCR 错拼匹配用不上，且它的官方 prompt 格式不建议额外加料。
+    """
 
     name = "llm"
     temperature = 0.3
@@ -461,7 +466,16 @@ class GeneralLLMTranslator(_LlamaGGUFTranslator):
     def __init__(self, cfg: Config):
         src = _LANG_NAMES.get(cfg.source_lang, "原文语言")
         self.system_prompt = _LLM_SYS_TMPL.format(src=src, dst=cfg.target_lang)
+        self.system_prompt += glossary_prompt(cfg.glossary)
         super().__init__(cfg)
+
+    def translate(self, texts: list[str], cfg: Config) -> list[str]:
+        # 先做源文侧替换：OCR 把 HANAMICHI 认成 HANAMiCHiW 这类错拼，靠提示词是修不回来的
+        # （模型不知道那串字母指谁），只有确定性的名字替换能兜住。替换只影响送进模型的
+        # 文本，Region.source_text 仍是 OCR 原文，校对页看到的还是识别结果。
+        if cfg.glossary:
+            texts = [apply_glossary(t, cfg.glossary) for t in texts]
+        return super().translate(texts, cfg)
 
 
 class MockTranslator(BaseTranslator):

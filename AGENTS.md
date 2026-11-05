@@ -219,6 +219,19 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
     `_pause_requested/_resume_event`，暂停语义与单任务完全一致（页边界生效、释放显存、
     `paused` 信号把队列状态置为 paused），暂停期间 `_run_next` 不自动推进（worker 阻塞
     未 finished），恢复后当前任务继续、队列照常推进下一个。
+28. **成品页按后缀选编码**（`core/utils.atomic_save_image` + `OUTPUT_JPEG_QUALITY=90`）：
+    `.jpg/.jpeg` 写 JPEG（q90、subsampling=0），其余写 PNG。旧实现无条件写 PNG 而文件仍叫
+    `.jpg`，CBZ 里就是"扩展名 jpg、内容 PNG"的页——部分阅读器按后缀解码直接拒读，且体积是
+    无损的 3 倍。2026-11-05 实测同一张 995×1515 页：PNG 1.22 MB / JPEG q90 426 KB。
+    **顺手记一条容易被误判的事实**：输入图是 13 MP（约 420 dpi），流水线按 `pdf_dpi=150`
+    先缩到长边 1515px 才处理，成品 995×1515 对 300ppi 阅读器不算大——"文件大"是编码问题，
+    不是分辨率问题，别再去缩图。
+29. **专有名词译名表**（`pipeline/glossary.py` + `Config.glossary` + CLI `--glossary`，设置页
+    未接）：翻译前先做**源文侧替换**，再做提示词约束。源文侧替换才是关键——EasyOCR 对风格化
+    字体把 `HANAMICHI` 认成 `HANAMiCHiW`，模型不知道那串字母指谁，光靠 system_prompt 里的
+    对照表修不回来；`apply_glossary` 用相似度阈值 0.85 吃掉这类单字母增删。`Region.source_text`
+    仍保留 OCR 原文（校对页看到的是识别结果）。改术语表后必须让翻译缓存失效才会生效——
+    `runner._get_translator` 的签名里已经带上 `sorted(cfg.glossary.items())`。
 
 ## 变更治理：已验证锁定参数（动之前先读这里）
 
@@ -250,6 +263,8 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 | `suppress_overlaps` + `suppress_duplicate_text_runs` 两层去重 | `pipeline/detect.py` + `runner._ocr_page` | 两层都必须接上（后者**有测试**） | 只靠 IoU 会漏掉竖排窄条扫射框，同一台词被渲染 7 遍 | 167.JPEG 一条「それでも、」检出 7 框 |
 | `BaseTranslator._MAX_CHUNK_LINES`/`_CHUNK_OUTPUT_TOKEN_BUDGET` 与 `_LlamaGGUFTranslator` 的 `n_ctx=4096` | `pipeline/translate.py` | 联动关系 | 改分块预算必须同步重估 n_ctx | 2026-08 分块改造 |
 | `REGION_QUALITY_MIN_SCORE` | `pipeline/detect.py` | `0.4`（保守起点，**未校准**） | 不是实测校准的合适阈值 | commit 4c0a52e 单样本统计 |
+| `OUTPUT_JPEG_QUALITY` | `core/utils.py` | `90`（**有测试**） | 成品页编码；改小会糊字、改大体积翻倍（q95 524 KB vs q90 426 KB） | 2026-11-05 单页实测（见 CHANGELOG 同日条目） |
+| `glossary._FUZZY_MIN_RATIO` | `pipeline/glossary.py` | `0.85`（**有测试**） | 低了会误伤普通词（DAISUKI/SUZUKI 0.77），高了吃不掉 OCR 错拼（HANAMiCHiW/HANAMICHI 0.94） | 同上，真实 OCR 串 + 单测 |
 | 取色/竖排/描边/渲染字体兜底等 | `pipeline/inpaint.py`、`render.py` | 见上面对应编号条目 | 大多带"待校准"标注 | 各自条目 |
 
 **改参数前的最低流程**：读这份清单 → 确认要改的是哪个锁定值 → 单独改这一个 →

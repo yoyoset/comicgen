@@ -55,13 +55,29 @@ def _build_arg_parser():
     p.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     p.add_argument("--cleanup-intermediate", action="store_true",
                    help="任务完整成功后删除中间产物，仅保留最终交付物（之后无法校对/断点续跑）")
+    p.add_argument("--glossary", default=None, metavar="FILE",
+                   help="专有名词译名表（UTF-8，每行「原文=译名」，# 开头为注释），例如人名统一"
+                        "译法。见 comic_gen/pipeline/glossary.py")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
+    glossary: dict[str, str] = {}
+    if args.glossary:
+        from ..pipeline.glossary import parse_glossary_text
+
+        path = Path(args.glossary)
+        if not path.is_file():
+            print(f"术语表文件不存在：{path}")
+            return 1
+        glossary = parse_glossary_text(path.read_text(encoding="utf-8"))
+        if not glossary:
+            print(f"术语表文件里没有解析出任何条目（格式应为每行「原文=译名」）：{path}")
+            return 1
+        print(f"术语表：{len(glossary)} 条（{path}）")
     cfg = Config(translator=args.translator, source_lang=args.source_lang, device=args.device,
-                 cleanup_intermediate=args.cleanup_intermediate)
+                 cleanup_intermediate=args.cleanup_intermediate, glossary=glossary)
     try:
         report = run_job(args.input, args.output, cfg)
     except Exception as e:

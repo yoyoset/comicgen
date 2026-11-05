@@ -132,8 +132,10 @@ class Runner:
         # 用旧语言对的 system_prompt 推理。同一个引擎名绑定的模型路径变了也要重建，
         # 和 detector/ocr/inpainter 保持一致。cfg.device 现在也影响 GGUF 引擎的
         # n_gpu_layers（4.3），同样要算进签名，否则切 CPU/GPU 不会重建、白改设置。
+        # 术语表也会烤进 system_prompt（glossary_prompt），同理必须进签名。
         sig = (self.cfg.translator, self.cfg.source_lang, self.cfg.target_lang,
-               self.cfg.model_paths.get(self.cfg.translator), self.cfg.device)
+               self.cfg.model_paths.get(self.cfg.translator), self.cfg.device,
+               tuple(sorted(self.cfg.glossary.items())))
 
         def factory():
             from .translate import get_translator
