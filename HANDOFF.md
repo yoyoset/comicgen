@@ -33,7 +33,8 @@ manga-ocr / EasyOCR → 本地 GGUF 翻译（Sakura-14B 日译中 / 通用 Qwen3
   PUBLIC（不是这一轮改的，events 里查不到何时切换）。全历史扫描结果见 §6（唯一一处问题路径已按用户要求从全部历史清除）。
 - **GitHub Release v0.4.2 是当前版本**：https://github.com/yoyoset/comicgen/releases/tag/v0.4.2
   资产 `comicgen-0.4.2-win64-cpu.zip` 376,984,486 B，sha256 `b38a0018bb52d2dfb685409250679dfd326c0cc74a19dfd6b40b8ecfba224a4c`，
-  外加 `.sha256` 文件（LF，`sha256sum -c` 可直接用）。
+  外加 `.sha256` 文件（LF，`sha256sum -c` 可直接用）。未登录下回来 22 s，`sha256sum -c` OK，解压后 `--self-check` 跑通；
+  `releases/latest` 指向 v0.4.2（下载页按钮用 `releases/latest` 就不用每次改）。
 - 旧版都保留不删，标题和说明里标了"已被取代"：
   - v0.4.1：zip 376,982,899 B，sha256 `2c111899d336cb48ea24f2934cc48c44ca4fad53b6160f1ba33081c9eb744393`（长路径下弹窗布局重叠）
   - v0.4.0（tag 指向 c4718d3）：zip 376,973,179 B，sha256 `91439ffc9fdf26f9180a8bfc623ff60de9ee51607bd5d909474ad800415afa06`（首次运行没有下载按钮）
