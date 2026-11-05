@@ -1,6 +1,8 @@
 """OCR：日文走 manga-ocr（横排/竖排均支持）；其它语言走 EasyOCR。"""
 from __future__ import annotations
 
+import re
+
 import numpy as np
 from PIL import Image
 
@@ -27,6 +29,27 @@ def assemble_easyocr_text(results, min_conf: float = EASYOCR_MIN_CONF) -> str:
     return " ".join(text for _, text, _ in kept).strip()
 
 
+def clean_easyocr_text(text: str) -> str:
+    """归一化 EasyOCR 的两个系统性标点误识别：句点被认成 ':' 或 ';'。
+
+    2026-11-05 灌篮高手英文版 v01 实测（2356 个有文字的检测区域）：140 个以 ':'/';'
+    结尾、156 个中间夹着 ':'/';'，抽样看几乎全是句点/逗号的误识别——"He's So
+    SeNsitive:"、"Where Are You; SAKU- ragi?"、"OH; STOP!"。英文台词里分号极少、
+    冒号只在标题式排版出现，所以按位置保守归一：**行尾**的 ':'/';' 换成句点，
+    **行内**且两侧不是数字的换成逗号（比分/时间 "12:30" 不受影响）。
+
+    只用在 EasyOCR 后端上；manga-ocr 的日文输出里全角标点有正经用法，不能一起改。
+    """
+    t = text.strip()
+    if not t:
+        return ""
+    t = re.sub(r"[:;](?=\s*$)", ".", t)
+    t = re.sub(r"(?<![0-9])[:;](?![0-9])", ",", t)
+    # "Hi , !" 这类替换后残留的逗号+句末标点
+    t = re.sub(r"\s*[,;]\s*([.?!])", r"\1", t)
+    return t.strip()
+
+
 class EasyOcrBackend:
     """把 easyocr.Reader.readtext 适配成与 manga-ocr 一致的接口：输入裁剪图、输出文字。
 
@@ -38,7 +61,7 @@ class EasyOcrBackend:
         self._reader = reader
 
     def __call__(self, crop: Image.Image) -> str:
-        return assemble_easyocr_text(self._reader.readtext(np.array(crop)))
+        return clean_easyocr_text(assemble_easyocr_text(self._reader.readtext(np.array(crop))))
 
 
 class OcrEngine:
