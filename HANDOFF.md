@@ -186,11 +186,11 @@ export PYTHONIOENCODING=utf-8
     算死表高（commit 6debffb）。**离屏（offscreen）渲染发现不了这类问题**：offscreen 平台没有中文字体（全是方框）、行高也和真机不同。
 12. **截图要 DPI aware**：先 `SetProcessDPIAware()`，再 `GetWindowRect` + `PrintWindow(hwnd, dc, 2)`；不这样截，125% 缩放下
     只截到窗口左上角一块，会误以为界面没问题。PrintWindow 只读像素、不操作窗口，不需要 computer-use 授权。
+13. **旧弹窗的"还需下载约 7.6 GB … 大小见上表"是错的**：`plan_download_bytes` 只计 LAYOUT_FILE、`llm` 的 size_bytes 故意为 0，
+    7.6 又是 GiB——实际只算了 Sakura 一项，表里也没有大小列。新代码用 `first_run_plan.total_bytes`，十进制。
 14. **从 Release 下回来校验失败、zip 打不开**（0.4.1 第一次下载：326 s 只拿到 32,193,852 B，curl 仍报 200）→ 网络中途断了，
     不是资产坏了（`gh release view --json assets` 的 digest 与本地一致）→ `curl -L -C - --retry 5 --retry-all-errors` 续传（206），
     45 s 补完、`sha256sum -c` OK。判断资产好坏先看 GitHub 的 digest，别急着重传。
-13. **旧弹窗的"还需下载约 7.6 GB … 大小见上表"是错的**：`plan_download_bytes` 只计 LAYOUT_FILE、`llm` 的 size_bytes 故意为 0，
-    7.6 又是 GiB——实际只算了 Sakura 一项，表里也没有大小列。新代码用 `first_run_plan.total_bytes`，十进制。
 
 ## 6. 已知但还没处理的问题
 
