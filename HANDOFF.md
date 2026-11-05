@@ -24,8 +24,12 @@ manga-ocr / EasyOCR → 本地 GGUF 翻译（Sakura-14B 日译中 / 通用 Qwen3
   首次运行下载（上游官方 wheel，3.07 GB 下载，解包 4.78 GB）。之前的 CUDA 整包 5.9 GB，超过 GitHub Release
   单文件 2 GB 上限，发不出去。
 - **修了一个 CPU 环境下必现的 bug**：LaMa 在 CPU 版 torch 上加载失败，整页抹字失败（见 §5 坑 1）。
-- 仓库 `yoyoset/comicgen`：**截至写这封信时仍是 private**。全历史扫描结果和待用户拍板的一处见 §6。
-- GitHub Release / squareuncle.com 下载页上架进度：见 §6 最后一条（以 `git tag` 和 Releases 页实际状态为准）。
+- 仓库 `yoyoset/comicgen`：**已是 public**。交接给我时说是 private，但 2026-11-05 13:5x 推送前用 `gh repo view` 查到已经是
+  PUBLIC（不是这一轮改的，events 里查不到何时切换）。全历史扫描结果和一处待用户决定是否清理的路径见 §6。
+- **GitHub Release v0.4.0 已发**：https://github.com/yoyoset/comicgen/releases/tag/v0.4.0（tag 指向 cb933a4）。
+  资产 `comicgen-0.4.0-win64-cpu.zip` 376,973,179 B，sha256 `91439ffc9fdf26f9180a8bfc623ff60de9ee51607bd5d909474ad800415afa06`，
+  外加 `.sha256` 文件。未登录 curl 下回来 21 s、`sha256sum -c` OK、解压后 `--self-check` 与 mock 翻译跑通。
+- squareuncle.com 下载页**还没上架**（属于 SUBLOG 仓库那边的会话，不在本项目改）。
 - 产品排期总表在 `F:\my_ai\SUBLOG\video\weekly\2026-11-博客与产品排期.md`（不在本仓库，不进 git）。
   博客/下载页属于 SUBLOG 仓库，**不要在本项目会话里改 SUBLOG**。
 
@@ -156,10 +160,14 @@ export PYTHONIOENCODING=utf-8
    → 绝不能打包它；`build_release.py` 从全新目录构建并体检。
 7. **EXE 从 shell 启动时 stdout 不是 None**，`comicgen.log` 不会生成，输出直接到管道；只有双击（无控制台）时才写 log。
 8. **pip 装的 torch 不认系统 CUDA**：它自带 CUDA 库。"让用户自己装 CUDA"不能减小安装包，这是整个方案的出发点。
+9. **Release 上的 `.sha256` 用 `sha256sum -c` 校验失败**（`'...zip'$'\r': No such file`）→ `Path.write_text` 在 Windows 写成 CRLF
+   → 改 `write_bytes`（commit b90fac4），资产已 `--clobber` 重传。**重传后立刻下载拿到的还是旧文件**（CDN 缓存），
+   隔一会儿或带个查询参数再下才是新的；判断以 `gh release view --json assets` 的 `digest`/`size` 为准。
+10. **`gh release create --target` 要完整 40 位提交哈希**，短哈希报 `Release.target_commitish is invalid`（HTTP 422）。
 
 ## 6. 已知但还没处理的问题
 
-- **仓库公开前待用户拍板**：全历史扫描（`git log --all -p`，99 个提交）无密钥/令牌、无私人图片、无大文件（最大 blob 2.9 MB）；
+- **待用户决定要不要事后清理**（仓库已经公开，见 §1）：全历史扫描（`git log --all -p`，99 个提交）无密钥/令牌、无私人图片、无大文件（最大 blob 2.9 MB）；
   邮箱 `yoysoet@gmail.com`/`yoyoset@gmail.com` 与公开的 subgen 相同。**但**历史和当前文件里有一个商业杂志的本地目录名
   `E:\某漫画杂志\...`（`scripts/compare_sakura_prompts.py` 的 `PAGES` 常量、
   `docs/AGENT_BRIEF.md` 写明"493 张 JPEG 原图"）。只有路径字符串，没有图像或对白。是否改写历史由用户决定，**不要自作主张 rewrite**。
@@ -174,7 +182,8 @@ export PYTHONIOENCODING=utf-8
 - 开发态 `python -m comic_gen.app.job_service` 不调用 `activate()`（开发态 .venv 本来就是 GPU 版），有意为之。
 - 镜像回退只在本地假服务器上测过逻辑；真实镜像只核对了 HEAD 200 + 字节数（阿里云）和 Range 206（gh-proxy），没整包走过一遍。
 - 组件页文案只有中文。
-- Release / 下载页：本轮的实际进度写在排期文件和 CHANGELOG 0.4.0 一节；以 Releases 页为准。
+- 下载页（squareuncle.com/download）上架、隐私说明页、博客：没做，归 SUBLOG 会话。需要的材料都在 §1（链接、大小、sha256）。
+- 安装包未签名，Windows 可能提示未知发布者。
 
 ## 7. 不要做的事
 
