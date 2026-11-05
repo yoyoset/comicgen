@@ -120,6 +120,19 @@ def test_rerender_job_reuses_existing_work_dir(tmp_path, monkeypatch):
     assert second.total_pages == 1
 
 
+def test_cli_exposes_resolution_and_font_knobs():
+    """换算分辨率/字号是 300 dpi 交付需要的两个旋钮：300 dpi 下页面像素翻倍，
+    仍用 48px 的字号上限会让译文只有一半大小，所以必须能一起调。默认值保持不变。"""
+    parser = _build_arg_parser()
+    defaults = parser.parse_args(["in.zip"])
+    assert (defaults.pdf_dpi, defaults.min_font_size, defaults.max_font_size) == (150, 10, 48)
+
+    scaled = parser.parse_args(
+        ["in.zip", "--pdf-dpi", "300", "--min-font-size", "20", "--max-font-size", "96"]
+    )
+    assert (scaled.pdf_dpi, scaled.min_font_size, scaled.max_font_size) == (300, 20, 96)
+
+
 def test_cli_choices_derive_from_registry():
     """CLI 的 --translator/--source-lang choices 必须来自 registry，不能是另一份
     硬编码列表——否则加新引擎/新语言时会出现"注册表能跑但 CLI 传不进去"的漂移。

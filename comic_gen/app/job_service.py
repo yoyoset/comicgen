@@ -58,6 +58,17 @@ def _build_arg_parser():
     p.add_argument("--glossary", default=None, metavar="FILE",
                    help="专有名词译名表（UTF-8，每行「原文=译名」，# 开头为注释），例如人名统一"
                         "译法。见 comic_gen/pipeline/glossary.py")
+    # 图片输入的"处理分辨率"：长边按参考开本(B5)折算到这个 dpi 再进流水线，超出的图会先缩小。
+    # 300 dpi 适合 300ppi 的阅读器/放大看细节，代价是检测/OCR/抹字耗时随像素数近似线性上涨；
+    # 150 是默认值，够 6-7 寸屏。
+    p.add_argument("--pdf-dpi", type=int, default=150, metavar="DPI",
+                   help="处理分辨率（图片输入按 B5 长边折算，默认 150；300 适合 300ppi 阅读器）")
+    # 字号上限跟处理分辨率联动：300 dpi 下页面像素翻倍，仍按 48px 上限排版会让字只有一半大。
+    # 只暴露这两个旋钮，不搞自动缩放——自动缩放会让 150/300 的输出不可预期地漂移。
+    p.add_argument("--min-font-size", type=int, default=10, metavar="PX",
+                   help="译文最小字号（默认 10；300 dpi 建议 20）")
+    p.add_argument("--max-font-size", type=int, default=48, metavar="PX",
+                   help="译文最大字号（默认 48；300 dpi 建议 96）")
     return p
 
 
@@ -76,8 +87,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"术语表文件里没有解析出任何条目（格式应为每行「原文=译名」）：{path}")
             return 1
         print(f"术语表：{len(glossary)} 条（{path}）")
+    if args.min_font_size > args.max_font_size:
+        print(f"最小字号不能大于最大字号（{args.min_font_size} > {args.max_font_size}）")
+        return 1
     cfg = Config(translator=args.translator, source_lang=args.source_lang, device=args.device,
-                 cleanup_intermediate=args.cleanup_intermediate, glossary=glossary)
+                 cleanup_intermediate=args.cleanup_intermediate, glossary=glossary,
+                 pdf_dpi=args.pdf_dpi, min_font_size=args.min_font_size,
+                 max_font_size=args.max_font_size)
     try:
         report = run_job(args.input, args.output, cfg)
     except Exception as e:
