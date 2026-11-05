@@ -73,7 +73,7 @@ class EnvReport:
         """检测+OCR(日文)+抹字是最小可跑集合；Sakura/通用LLM 按需。
 
         被 ui/views/diagnostics_view.py 的摘要行读取——这是它的唯一消费者。
-        曾在 6185d1e 被当作"零调用死代码"误删，导致诊断页每次自检完成都在
+        曾在 395dd29 被当作"零调用死代码"误删，导致诊断页每次自检完成都在
         show_report 抛 AttributeError。删属性前先确认没有 UI/CLI 在引用。
         """
         required = ("detect", "ocr_ja", "lama")

@@ -26,7 +26,7 @@ manga-ocr / EasyOCR → 本地 GGUF 翻译（Sakura-14B 日译中 / 通用 Qwen3
 - **修了一个 CPU 环境下必现的 bug**：LaMa 在 CPU 版 torch 上加载失败，整页抹字失败（见 §5 坑 1）。
 - 仓库 `yoyoset/comicgen`：**已是 public**。交接给我时说是 private，但 2026-11-05 13:5x 推送前用 `gh repo view` 查到已经是
   PUBLIC（不是这一轮改的，events 里查不到何时切换）。全历史扫描结果和一处待用户决定是否清理的路径见 §6。
-- **GitHub Release v0.4.0 已发**：https://github.com/yoyoset/comicgen/releases/tag/v0.4.0（tag 指向 c4718d3；历史改写前是 cb933a4）。
+- **GitHub Release v0.4.0 已发**：https://github.com/yoyoset/comicgen/releases/tag/v0.4.0（tag 指向 c4718d3）。
   资产 `comicgen-0.4.0-win64-cpu.zip` 376,973,179 B，sha256 `91439ffc9fdf26f9180a8bfc623ff60de9ee51607bd5d909474ad800415afa06`，
   外加 `.sha256` 文件。未登录 curl 下回来 21 s、`sha256sum -c` OK、解压后 `--self-check` 与 mock 翻译跑通。
 - squareuncle.com 下载页**还没上架**（属于 SUBLOG 仓库那边的会话，不在本项目改）。

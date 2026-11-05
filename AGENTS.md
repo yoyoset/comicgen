@@ -249,7 +249,7 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 | `_is_failed_translation` 的重复退化/长度上限 | `pipeline/translate.py` | 同短句 ≥3 字重复 ≥3 次、输出 > 源文 4 倍 + 100 判失败（**有测试**） | 退化的最终兜底，删了垃圾直接上页 | 2026-08-25 328.JPEG 真实病例 |
 | `suppress_overlaps` + `suppress_duplicate_text_runs` 两层去重 | `pipeline/detect.py` + `runner._ocr_page` | 两层都必须接上（后者**有测试**） | 只靠 IoU 会漏掉竖排窄条扫射框，同一台词被渲染 7 遍 | 167.JPEG 一条「それでも、」检出 7 框 |
 | `BaseTranslator._MAX_CHUNK_LINES`/`_CHUNK_OUTPUT_TOKEN_BUDGET` 与 `_LlamaGGUFTranslator` 的 `n_ctx=4096` | `pipeline/translate.py` | 联动关系 | 改分块预算必须同步重估 n_ctx | 2026-08 分块改造 |
-| `REGION_QUALITY_MIN_SCORE` | `pipeline/detect.py` | `0.4`（保守起点，**未校准**） | 不是实测校准的合适阈值 | commit 92d175c 单样本统计 |
+| `REGION_QUALITY_MIN_SCORE` | `pipeline/detect.py` | `0.4`（保守起点，**未校准**） | 不是实测校准的合适阈值 | commit 4c0a52e 单样本统计 |
 | 取色/竖排/描边/渲染字体兜底等 | `pipeline/inpaint.py`、`render.py` | 见上面对应编号条目 | 大多带"待校准"标注 | 各自条目 |
 
 **改参数前的最低流程**：读这份清单 → 确认要改的是哪个锁定值 → 单独改这一个 →
@@ -266,5 +266,5 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 - **上游区域质量只做了保守分数过滤**：实测（同一次 493 页杂志运行）manga-ocr 没有置信度门槛、从不返回空
   字符串，6127 个检测区域里 OCR 结果 0 个为空——装饰花纹/logo 也会被幻觉成日文文字，照样进翻译和渲染。
   已按那次样本把 `REGION_QUALITY_MIN_SCORE=0.4` 的保守起点值收进 `detect.filter_region_quality`
-  （commit 92d175c 实测过滤掉 431 个低分区域）。**未在其它漫画素材上校准**，代码注释里明确写着这是
+  （commit 4c0a52e 实测过滤掉 431 个低分区域）。**未在其它漫画素材上校准**，代码注释里明确写着这是
   "保守起点值，尚未校准"——没有更多真实素材前不要当成"已实测的合适阈值"（全局 CLAUDE.md 硬性要求）。
