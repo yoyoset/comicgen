@@ -13,3 +13,4 @@ models/
 *.log
 settings.json
 settings.json.bak
+.venv-*/
