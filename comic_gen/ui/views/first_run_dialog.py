@@ -90,7 +90,7 @@ class FirstRunDialog(QtWidgets.QDialog):
             chk.setCheckState(QtCore.Qt.Unchecked)
             self.table.setItem(r, _COL_CHECK, chk)
             self._check_items[key] = chk
-            label = spec.label + ("" if spec.required else "（按需）")
+            label = spec.label + ("" if frp.default_selected(key) else "（按需）")
             self.table.setItem(r, _COL_LABEL, QtWidgets.QTableWidgetItem(label))
             self.table.setItem(r, _COL_PURPOSE, QtWidgets.QTableWidgetItem(spec.purpose))
             size_item = QtWidgets.QTableWidgetItem(frp.human_size(frp.approx_bytes(key)))
@@ -100,9 +100,10 @@ class FirstRunDialog(QtWidgets.QDialog):
             self.table.setItem(r, _COL_STATUS, st_item)
             self._status_items[key] = st_item
         self.table.itemChanged.connect(lambda *_: self._update_summary())
-        # 表高贴合 6 行内容：之前给了 stretch，表下面留一大块空白，把汇总和按钮挤到很下面
-        self.table.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustToContents)
-        self.table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        # 表高按实际行高算死，6 行全露出来：给 stretch 时表下面留一大块空白；改用
+        # AdjustToContents + 关滚动条时，真机（Windows、125% 缩放）截图只显示了 4 行，
+        # 第 5、6 行（含默认勾选的 LaMa）被藏掉——所以在 showEvent / 扫描完后按行高重算。
+        self.table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         lay.addWidget(self.table)
 
         # GPU 组件：只在有 N 卡驱动且还没装时出现。装在程序目录（不是模型目录），写清楚。
@@ -140,6 +141,16 @@ class FirstRunDialog(QtWidgets.QDialog):
         self.start_btn.clicked.connect(self._on_start)
         btn_row.addWidget(self.start_btn)
         lay.addLayout(btn_row)
+
+    def _fit_table_height(self):
+        self.table.resizeRowsToContents()
+        h = (self.table.horizontalHeader().height() + self.table.verticalHeader().length()
+             + 2 * self.table.frameWidth() + 2)
+        self.table.setFixedHeight(h)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fit_table_height()
 
     # ------------------------------------------------------------ 扫描
     def _pick_dir(self):
@@ -187,6 +198,7 @@ class FirstRunDialog(QtWidgets.QDialog):
                 chk.setFlags(QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled)
                 chk.setCheckState(QtCore.Qt.Checked if frp.default_selected(key) else QtCore.Qt.Unchecked)
         self.table.blockSignals(False)
+        self._fit_table_height()
         self._update_summary()
 
     # ------------------------------------------------------------ 汇总
