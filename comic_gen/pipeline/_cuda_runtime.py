@@ -1,36 +1,41 @@
-"""提前把 torch 自带的 CUDA 运行时 DLL 目录加入搜索路径，供 llama_cpp GPU 后端加载。
+"""把"实际会被 import 的那份 torch"的 lib 目录加入 DLL 搜索路径，供 llama_cpp GPU 后端加载。
 
-之前指向 nvidia-cublas-cu12 等独立 pip 包（_internal/nvidia/*/bin/）——那是给
-llama-cpp-python 单独装的一套 CUDA 12.9 运行时，而 torch/lib 下已经自带同一套
-DLL（cublas64_12.dll/cublasLt64_12.dll/cufft64_11.dll/cufftw64_11.dll/
-nvrtc64_120_0.dll/nvJitLink_120_0.dll/cudart64_12.dll，CUDA 12.4 系），是重复的
-第二套 CUDA 栈，打包体积多约 1.3GB。改为直接指向 torch/lib——它是单层目录
-（不像 nvidia 包那样每个子包各有自己的 bin/ 子目录），逻辑也跟着简化成单目录。
+ggml-cuda.dll 按名字找 cudart64_12.dll / cublas64_12.dll（CUDA 12.4 系），torch GPU 版的
+torch/lib 里自带同一套——借用它，不再单独打包/下载一套 CUDA 运行时。
+
+历史：最早指向 nvidia-cublas-cu12 等独立 pip 包（重复的第二套 CUDA 栈，多约 1.3GB）；
+后来写死成 `_internal/torch/lib`。2026-11-05 安装包改为 CPU 版、GPU 版 torch 由
+core.gpu_components 首次运行下载到 components/ 后，写死的路径会指到 CPU 版 torch（里面
+没有 cudart），所以改为用 importlib.util.find_spec 问"torch 会从哪导入"，不 import torch
+本身，也自动跟随 gpu_components.activate() 对 sys.path 的调整。
 """
 from __future__ import annotations
 
+import importlib.util
 import os
-import sys
 from pathlib import Path
 
 
-def preload_cuda_runtime():
-    candidates = []
-    if getattr(sys, "frozen", False):
-        candidates.append(Path(sys.executable).parent / "_internal" / "torch" / "lib")
-    else:
-        import site
+def torch_lib_dir() -> Path | None:
+    try:
+        spec = importlib.util.find_spec("torch")
+    except (ImportError, ValueError):
+        return None
+    if spec is None or not spec.origin:
+        return None
+    lib_dir = Path(spec.origin).parent / "lib"
+    return lib_dir if lib_dir.is_dir() else None
 
-        for d in site.getsitepackages():
-            candidates.append(Path(d) / "torch" / "lib")
-    for lib_dir in candidates:
-        if not lib_dir.is_dir():
-            continue
-        if str(lib_dir) in os.environ.get("_CG_CUDA_PATHS", ""):
-            continue
-        try:
-            os.add_dll_directory(str(lib_dir))
-        except Exception:
-            pass
-        os.environ["_CG_CUDA_PATHS"] = os.environ.get("_CG_CUDA_PATHS", "") + ";" + str(lib_dir)
-        os.environ["PATH"] = str(lib_dir) + os.pathsep + os.environ.get("PATH", "")
+
+def preload_cuda_runtime():
+    lib_dir = torch_lib_dir()
+    if lib_dir is None:
+        return
+    if str(lib_dir) in os.environ.get("_CG_CUDA_PATHS", ""):
+        return
+    try:
+        os.add_dll_directory(str(lib_dir))
+    except Exception:
+        pass
+    os.environ["_CG_CUDA_PATHS"] = os.environ.get("_CG_CUDA_PATHS", "") + ";" + str(lib_dir)
+    os.environ["PATH"] = str(lib_dir) + os.pathsep + os.environ.get("PATH", "")

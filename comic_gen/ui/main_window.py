@@ -30,6 +30,7 @@ from .job_controller import (
     JobController,
 )
 from .views.batch_view import BatchView
+from .views.components_view import ComponentsView
 from .views.diagnostics_view import DiagnosticsView
 from .views.first_run_dialog import FirstRunDialog
 from .views.model_view import ModelView
@@ -37,7 +38,13 @@ from .views.multi_folder_dialog import MultiFolderDialog
 from .views.review_view import ReviewView
 from .views.settings_view import SettingsView
 from .views.translate_view import TranslateView
-from .workers import DiagnosticsWorker, ModelWorker, ReviewRerenderWorker, ScanWorker
+from .workers import (
+    ComponentWorker,
+    DiagnosticsWorker,
+    ModelWorker,
+    ReviewRerenderWorker,
+    ScanWorker,
+)
 
 # 关窗时给任务线程的宽限：翻译阶段单页可能跑几十秒（LLM 推理），协作式取消只在页边界
 # 生效，3 秒的固定等待不够；超过这个上限仍不退出才强制关闭（宁可放弃等，也不能挂死）。
@@ -64,6 +71,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rv_thread: QtCore.QThread | None = None
         self._rv_worker: ReviewRerenderWorker | None = None
         self._review_session: ReviewSession | None = None
+        self._c_thread: QtCore.QThread | None = None
+        self._c_worker: ComponentWorker | None = None
+        self._c_cancel_event: threading.Event | None = None
 
         self.translate_view = TranslateView()
         self.batch_view = BatchView()
@@ -71,6 +81,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.model_view = ModelView()
         self.diagnostics_view = DiagnosticsView()
         self.review_view = ReviewView()
+        self.components_view = ComponentsView()
 
         tabs = QtWidgets.QTabWidget()
         tabs.addTab(self.translate_view, "翻译")
@@ -78,6 +89,7 @@ class MainWindow(QtWidgets.QMainWindow):
         tabs.addTab(self.review_view, "校对")
         tabs.addTab(self.settings_view, "设置")
         tabs.addTab(self.model_view, "模型管理")
+        tabs.addTab(self.components_view, "组件")
         tabs.addTab(self.diagnostics_view, "环境自检")
         self.setCentralWidget(tabs)
 
@@ -150,6 +162,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.model_view.dedupeRequested.connect(self._on_model_dedupe)
 
         self.diagnostics_view.recheckRequested.connect(self._run_diagnostics)
+
+        self.components_view.installRequested.connect(self._start_component_worker)
+        self.components_view.cancelRequested.connect(self._on_component_cancel)
+        self.components_view.removeRequested.connect(self._on_component_remove)
+        self.components_view.restartRequested.connect(self._on_restart)
 
         self.review_view.openRequested.connect(self._on_review_open)
         self.review_view.pageSelected.connect(self._on_review_page_selected)
@@ -632,6 +649,47 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             report = result
         self.diagnostics_view.show_report(report)
+        self.components_view.set_cuda_available(report.cuda_available)
+
+    # ------------------------------------------------------------ GPU 组件
+    def _start_component_worker(self):
+        if self._c_thread is not None and self._c_thread.isRunning():
+            return
+        self.components_view.set_busy(True)
+        self._c_cancel_event = threading.Event()
+        self._c_thread = QtCore.QThread()
+        self._c_worker = ComponentWorker(self._c_cancel_event)
+        self._c_worker.moveToThread(self._c_thread)
+        self._c_thread.started.connect(self._c_worker.run)
+        self._c_worker.progress.connect(self.components_view.on_progress)
+        self._c_worker.log.connect(self.components_view.append_log)
+        self._c_worker.finished.connect(self.components_view.on_finished)
+        self._c_worker.finished.connect(self._c_thread.quit)
+        self._c_thread.start()
+
+    def _on_component_cancel(self):
+        if self._c_cancel_event is not None:
+            self._c_cancel_event.set()
+
+    def _on_component_remove(self):
+        from ..core import gpu_components
+
+        now = gpu_components.schedule_removal()
+        self.components_view.append_log(
+            "已删除 GPU 组件" if now else "GPU 组件正在使用中，已安排在下次启动时删除")
+        self.components_view.refresh()
+
+    def _on_restart(self):
+        if self._any_job_busy():
+            QtWidgets.QMessageBox.information(self, "无法重启", "有任务正在运行，结束后再重启。")
+            return
+        import sys
+
+        args = sys.argv[1:] if getattr(sys, "frozen", False) else sys.argv
+        if QtCore.QProcess.startDetached(sys.executable, args):
+            self.close()
+        else:
+            QtWidgets.QMessageBox.warning(self, "重启失败", "无法自动重启，请手动关闭后重新打开程序。")
 
     def _on_open_output(self):
         """「打开输出目录」：在文件管理器中打开最近一次任务的输出位置。
@@ -968,6 +1026,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.batch_controller.stop()
         if self._m_cancel_event is not None:
             self._m_cancel_event.set()
+        if self._c_cancel_event is not None:
+            self._c_cancel_event.set()  # 下载循环 1MB 内响应；.part 保留，下次续传
         self._wait_for_shutdown_threads()
         self.settings.window_geometry_hex = bytes(self.saveGeometry().toHex()).decode()
         self.settings.save()
@@ -1004,7 +1064,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # 模型/扫描/自检线程同样要等收尾，不能只处理翻译任务的线程——直接退出会让还在跑的
         # QThread 对象在解释器关闭时失去引用，是 FirstRunDialog.closeEvent 已经用同样
         # 方式防过的那类崩溃。这几类线程都很快，3 秒足够。
-        for thread in (self._m_thread, self._s_thread, self._rv_thread, self._d_thread):
+        for thread in (self._m_thread, self._s_thread, self._rv_thread, self._d_thread, self._c_thread):
             if thread is not None and thread.isRunning():
                 thread.quit()
                 thread.wait(3000)

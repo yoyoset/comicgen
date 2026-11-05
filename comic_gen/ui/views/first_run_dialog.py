@@ -84,6 +84,16 @@ class FirstRunDialog(QtWidgets.QDialog):
         self.warning_lbl.setWordWrap(True)
         lay.addWidget(self.warning_lbl)
 
+        # 安装包只带 CPU 框架：有 N 卡但还没装 GPU 组件时，首次运行就告诉用户去哪装。
+        from ...core import gpu_components as gc
+        if gc.has_nvidia_driver() and not gc.pack_status().is_ready:
+            gpu_lbl = QtWidgets.QLabel(
+                "检测到 NVIDIA 显卡：建议到「组件」页下载 GPU 加速组件"
+                f"（约 {gc.total_download_bytes() / 1e9:.1f} GB），否则全部走 CPU，翻译会非常慢。")
+            gpu_lbl.setWordWrap(True)
+            gpu_lbl.setStyleSheet("color: #1f6feb;")
+            lay.addWidget(gpu_lbl)
+
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch(1)
         self.later_btn = QtWidgets.QPushButton("稍后再说")

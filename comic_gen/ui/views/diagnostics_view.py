@@ -44,7 +44,8 @@ class DiagnosticsView(QtWidgets.QWidget):
             item.setForeground(1, QtCore.Qt.darkGreen if ok else QtCore.Qt.red)
             self.tree.addTopLevelItem(item)
 
-        add("CUDA（GPU 加速）", report.cuda_available, "" if report.cuda_available else "将使用 CPU，速度变慢")
+        add("CUDA（GPU 加速）", report.cuda_available,
+            "" if report.cuda_available else "将使用 CPU，速度变慢；有 N 卡请到「组件」页下载 GPU 组件")
         add("llama-cpp-python（本地 LLM 引擎）", report.llama_cpp_available)
         add("WinRAR / UnRAR（RAR/CBR 输入）", report.unrar_available, report.unrar_path or "")
 

@@ -283,3 +283,36 @@ class DiagnosticsWorker(QtCore.QObject):
             self.finished.emit(e)
             return
         self.finished.emit(report)
+
+
+class ComponentWorker(QtCore.QObject):
+    """后台下载/安装 GPU 组件（core.gpu_components.install）。
+
+    和 ModelWorker 不同，这里的下载是自己写的分块循环，取消能在 1MB 粒度内生效。
+    finished(ok, 人话消息, 技术细节)：失败时人话进界面红字，技术细节进日志框。
+    """
+
+    progress = QtCore.Signal(str, object, object)  # 阶段, 已完成字节, 总字节（>2^31，用 object 防溢出）
+    log = QtCore.Signal(str)
+    finished = QtCore.Signal(bool, str, str)
+
+    def __init__(self, cancel_event: threading.Event):
+        super().__init__()
+        self.cancel_event = cancel_event
+
+    @QtCore.Slot()
+    def run(self):
+        from ..core import gpu_components as gc
+
+        t0 = time.monotonic()
+        try:
+            gc.install(progress=lambda s, d, t: self.progress.emit(s, d, t),
+                       log=self.log.emit, cancel=self.cancel_event)
+        except gc.InstallError as e:
+            self.finished.emit(False, str(e), e.technical)
+            return
+        except Exception as e:  # noqa: BLE001 —— 未预期异常也要回到界面，不能让线程无声死掉
+            self.finished.emit(False, f"安装失败：{e}", traceback.format_exc())
+            return
+        mins = (time.monotonic() - t0) / 60
+        self.finished.emit(True, f"安装完成（用时 {mins:.1f} 分钟），重启程序后生效。", "")
