@@ -18,17 +18,22 @@
 manga-ocr / EasyOCR → 本地 GGUF 翻译（Sakura-14B 日译中 / 通用 Qwen3-14B，llama.cpp）→ LaMa 抹字 →
 排版贴回 → 同格式输出。全部本地推理，无 API Key。只在 Python 3.13 上开发测试过。
 
-**版本 0.4.0（2026-11-05）**，这一轮做的事：
+**版本 0.4.1（2026-11-05）**，这一轮做的事：
 
 - **分发方式改了**：安装包只带 CPU 运行框架（zip 0.38 GB，解压 1.12 GB），GPU 部分由程序「组件」页
   首次运行下载（上游官方 wheel，3.07 GB 下载，解包 4.78 GB）。之前的 CUDA 整包 5.9 GB，超过 GitHub Release
   单文件 2 GB 上限，发不出去。
 - **修了一个 CPU 环境下必现的 bug**：LaMa 在 CPU 版 torch 上加载失败，整页抹字失败（见 §5 坑 1）。
+- **0.4.1：首次运行弹窗重做**（用户反馈"弹出来了但没有地方开始下载"）：一屏列出每个模型的勾选框 + 大小 + 状态、
+  「模型保存到 + 更改…」、GPU 组件勾选项（写明装在程序目录 `components\`）、逐行"下什么 → 存到哪"和合计，
+  主按钮「开始下载」；点了以后主窗口同时启动模型下载和 GPU 组件安装，模型页有进度条，页签标题带状态。见 §4 第 11 条。
 - 仓库 `yoyoset/comicgen`：**已是 public**。交接给我时说是 private，但 2026-11-05 13:5x 推送前用 `gh repo view` 查到已经是
-  PUBLIC（不是这一轮改的，events 里查不到何时切换）。全历史扫描结果和一处待用户决定是否清理的路径见 §6。
-- **GitHub Release v0.4.0 已发**：https://github.com/yoyoset/comicgen/releases/tag/v0.4.0（tag 指向 c4718d3）。
-  资产 `comicgen-0.4.0-win64-cpu.zip` 376,973,179 B，sha256 `91439ffc9fdf26f9180a8bfc623ff60de9ee51607bd5d909474ad800415afa06`，
-  外加 `.sha256` 文件。未登录 curl 下回来 21 s、`sha256sum -c` OK、解压后 `--self-check` 与 mock 翻译跑通。
+  PUBLIC（不是这一轮改的，events 里查不到何时切换）。全历史扫描结果见 §6（唯一一处问题路径已按用户要求从全部历史清除）。
+- **GitHub Release v0.4.1 是当前版本**：https://github.com/yoyoset/comicgen/releases/tag/v0.4.1
+  资产 `comicgen-0.4.1-win64-cpu.zip` 376,982,899 B，sha256 `2c111899d336cb48ea24f2934cc48c44ca4fad53b6160f1ba33081c9eb744393`，
+  外加 `.sha256` 文件（LF，`sha256sum -c` 可直接用）。
+- v0.4.0（https://github.com/yoyoset/comicgen/releases/tag/v0.4.0，tag 指向 c4718d3）保留不删，标题和说明里标了"已被 0.4.1 取代"。
+  它的 zip 376,973,179 B，sha256 `91439ffc9fdf26f9180a8bfc623ff60de9ee51607bd5d909474ad800415afa06`。
 - squareuncle.com 下载页**还没上架**（属于 SUBLOG 仓库那边的会话，不在本项目改）。
 - 产品排期总表在 `F:\my_ai\SUBLOG\video\weekly\2026-11-博客与产品排期.md`（不在本仓库，不进 git）。
   博客/下载页属于 SUBLOG 仓库，**不要在本项目会话里改 SUBLOG**。
@@ -128,7 +133,13 @@ export PYTHONIOENCODING=utf-8
    产物 1.12 GB（旧 CUDA 整包 `_internal` 5.3 GB）。产物从 `build\release` 全新生成，绝不碰 `dist\comicgen`。
 9. **EXE 加了三个无界面开关**（`--self-check` / `--install-gpu-components` / `--cli`）：冻结环境里的行为（缺 stdlib 模块、
    SSL 证书、DLL 搜索顺序）只能在 EXE 里验证，而 EXE 只有 GUI 这一个入口。也给用户排障用。
-10. **许可**：安装包里有 PyMuPDF（AGPL-3.0），所以安装包整体按 AGPL 分发，`LICENSE` 和 `THIRD_PARTY_NOTICES.md` 随包；
+11. **首次运行弹窗只产出"下载计划"，不自己下载**（0.4.1）：`FirstRunDialog.download_plan()` 返回 (模型 key 列表, 是否装 GPU)，
+    `MainWindow` 关窗后调用 `_start_first_run_downloads`，复用既有 `ModelWorker` / `ComponentWorker`——下载逻辑只有一份，
+    和「模型管理」「组件」页的按钮走同一条路。默认勾选 = 必需三项 + Sakura（默认日译中引擎）；非日文 OCR、通用 LLM（8.4 GB）按需不默认。
+    大小用 `core/first_run_plan.approx_bytes`（manifest 精确字节数优先，否则解析 `approx_size`），十进制 GB，和组件页一致。
+    模型下载器（from_pretrained / hf_hub_download / torch.hub）都没有进度回调，进度靠 `first_run_plan.watched_bytes` 每秒统计
+    `<hub>/models--org--name/blobs/` 或 torch hub `checkpoints/big-lama.pt*` 的字节数增长来估（真实下载 LaMa 实测 0%→87%→99%）。
+12. **许可**：安装包里有 PyMuPDF（AGPL-3.0），所以安装包整体按 AGPL 分发，`LICENSE` 和 `THIRD_PARTY_NOTICES.md` 随包；
     对应源码 = 同版本 tag，**这也是仓库必须公开后才适合挂下载链接的原因之一**。
 
 ### 验收数字（2026-11-05，最终发布 zip，`E:\cg-e2e-final`）
@@ -142,6 +153,12 @@ export PYTHONIOENCODING=utf-8
 | `--self-check`（装完） | 退出码 0：torch 2.6.0+cu124 来自 components，CUDA 可用（RTX 3060），llama gpu_offload=True |
 | `--cli` Sakura-14B 翻译 1 页 | 退出码 0，31 s（模型文件已在系统缓存；第一次冷启动 65 s）；显存 1,865 → 峰值 11,850 MiB |
 | 装完组件的整个目录 | 5,906,210,491 B |
+
+0.4.1（`E:\cg-041-check2`，HF_HOME / TORCH_HOME 指向空目录）：zip 376,982,899 B；首次运行弹窗真机截图（DPI aware PrintWindow）
+6 行模型全部可见，默认勾选检测/OCR 日文/Sakura/LaMa，汇总"共约 9.0 GB → 存到 …；GPU 组件约 3.1 GB → 装到 …\components；
+合计约 12.1 GB"，按钮「开始下载」；`--self-check` 退出码 1（CPU 态，符合预期），`--cli` mock 翻译退出码 0（47 s）。
+点「开始下载」之后的主窗口行为在离屏脚本里验过（切到模型管理页、真实下载 LaMa 进度条走到 99%、落盘 205,803,670 B），
+**没有在真实窗口里点过**。
 
 ## 5. 踩过的坑（现象 → 原因 → 解决）
 
@@ -164,6 +181,13 @@ export PYTHONIOENCODING=utf-8
    → 改 `write_bytes`（commit 99dc870），资产已 `--clobber` 重传。**重传后立刻下载拿到的还是旧文件**（CDN 缓存），
    隔一会儿或带个查询参数再下才是新的；判断以 `gh release view --json assets` 的 `digest`/`size` 为准。
 10. **`gh release create --target` 要完整 40 位提交哈希**，短哈希报 `Release.target_commitish is invalid`（HTTP 422）。
+11. **首次运行弹窗的表格只露出 4 行**（0.4.1 候选包真机截图发现，默认勾选的 LaMa 被藏掉）→ 用了 `AdjustToContents` +
+    关竖向滚动条，算出来的高度不含全部行 → 在 `showEvent` 和扫描完成后按 `horizontalHeader().height() + verticalHeader().length()`
+    算死表高（commit 6debffb）。**离屏（offscreen）渲染发现不了这类问题**：offscreen 平台没有中文字体（全是方框）、行高也和真机不同。
+12. **截图要 DPI aware**：先 `SetProcessDPIAware()`，再 `GetWindowRect` + `PrintWindow(hwnd, dc, 2)`；不这样截，125% 缩放下
+    只截到窗口左上角一块，会误以为界面没问题。PrintWindow 只读像素、不操作窗口，不需要 computer-use 授权。
+13. **旧弹窗的"还需下载约 7.6 GB … 大小见上表"是错的**：`plan_download_bytes` 只计 LAYOUT_FILE、`llm` 的 size_bytes 故意为 0，
+    7.6 又是 GiB——实际只算了 Sakura 一项，表里也没有大小列。新代码用 `first_run_plan.total_bytes`，十进制。
 
 ## 6. 已知但还没处理的问题
 

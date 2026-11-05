@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comic-gen"
-version = "0.4.0"
+version = "0.4.1"
 description = "漫画自动翻译流水线：日文定位 → OCR → 翻译 → 抹字 → 贴回"
 # 只在 3.13 上开发/测试过（见 AGENTS.md 的环境说明），之前 ">=3.10" 是没实测过的
 # 猜测范围——审计明确指出这一条，"声称支持但没验证过"和"真的支持"是两回事，
