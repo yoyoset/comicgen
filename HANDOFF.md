@@ -31,7 +31,7 @@ manga-ocr / EasyOCR → 本地 GGUF 翻译（Sakura-14B 日译中 / 通用 Qwen3
   PUBLIC（不是这一轮改的，events 里查不到何时切换）。全历史扫描结果见 §6（唯一一处问题路径已按用户要求从全部历史清除）。
 - **GitHub Release v0.4.1 是当前版本**：https://github.com/yoyoset/comicgen/releases/tag/v0.4.1
   资产 `comicgen-0.4.1-win64-cpu.zip` 376,982,899 B，sha256 `2c111899d336cb48ea24f2934cc48c44ca4fad53b6160f1ba33081c9eb744393`，
-  外加 `.sha256` 文件（LF，`sha256sum -c` 可直接用）。
+  外加 `.sha256` 文件（LF，`sha256sum -c` 可直接用）。未登录下回来 `sha256sum -c` OK，解压后 `--self-check` 与 mock 翻译（退出码 0）跑通。
 - v0.4.0（https://github.com/yoyoset/comicgen/releases/tag/v0.4.0，tag 指向 c4718d3）保留不删，标题和说明里标了"已被 0.4.1 取代"。
   它的 zip 376,973,179 B，sha256 `91439ffc9fdf26f9180a8bfc623ff60de9ee51607bd5d909474ad800415afa06`。
 - squareuncle.com 下载页**还没上架**（属于 SUBLOG 仓库那边的会话，不在本项目改）。
@@ -186,6 +186,9 @@ export PYTHONIOENCODING=utf-8
     算死表高（commit 6debffb）。**离屏（offscreen）渲染发现不了这类问题**：offscreen 平台没有中文字体（全是方框）、行高也和真机不同。
 12. **截图要 DPI aware**：先 `SetProcessDPIAware()`，再 `GetWindowRect` + `PrintWindow(hwnd, dc, 2)`；不这样截，125% 缩放下
     只截到窗口左上角一块，会误以为界面没问题。PrintWindow 只读像素、不操作窗口，不需要 computer-use 授权。
+14. **从 Release 下回来校验失败、zip 打不开**（0.4.1 第一次下载：326 s 只拿到 32,193,852 B，curl 仍报 200）→ 网络中途断了，
+    不是资产坏了（`gh release view --json assets` 的 digest 与本地一致）→ `curl -L -C - --retry 5 --retry-all-errors` 续传（206），
+    45 s 补完、`sha256sum -c` OK。判断资产好坏先看 GitHub 的 digest，别急着重传。
 13. **旧弹窗的"还需下载约 7.6 GB … 大小见上表"是错的**：`plan_download_bytes` 只计 LAYOUT_FILE、`llm` 的 size_bytes 故意为 0，
     7.6 又是 GiB——实际只算了 Sakura 一项，表里也没有大小列。新代码用 `first_run_plan.total_bytes`，十进制。
 
