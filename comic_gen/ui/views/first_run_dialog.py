@@ -35,6 +35,28 @@ def _free_bytes(p: Path) -> int | None:
         return None
 
 
+class _FitTable(QtWidgets.QTableWidget):
+    """尺寸提示 = 表头 + 全部行 + 边框（宽度 = 全部列宽），竖直方向 Fixed。
+
+    0.4.1 先后两种做法都翻车（150% 缩放真机截图）：AdjustToContents + 关滚动条只露出 4 行；
+    改成扫描后 setMinimumHeight/setMaximumHeight 定高，布局却仍按旧的高度摆后面的控件
+    （实测表格 y=113..287，GPU 勾选框却被摆在 y=214），勾选框盖住最后两行。让布局直接从
+    sizeHint 拿到内容尺寸，就没有"控件高度和布局缓存不一致"这回事。
+    """
+
+    def _content_size(self) -> QtCore.QSize:
+        frame = 2 * self.frameWidth()
+        w = self.horizontalHeader().length() + frame
+        h = self.horizontalHeader().sizeHint().height() + self.verticalHeader().length() + frame + 2
+        return QtCore.QSize(w, h)
+
+    def sizeHint(self) -> QtCore.QSize:
+        return self._content_size()
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        return self._content_size()
+
+
 class FirstRunDialog(QtWidgets.QDialog):
     def __init__(self, settings, parent=None):
         super().__init__(parent)
@@ -52,6 +74,10 @@ class FirstRunDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------ 搭建
     def _build(self):
         lay = QtWidgets.QVBoxLayout(self)
+        # 窗口最小尺寸跟着内容走：扫描完汇总变长（换行）时窗口自己长高，而不是把布局压扁——
+        # 0.4.1 默认约束下，程序目录/模型目录路径很长时汇总和提示各折成 3 行，内容高过窗口，
+        # Qt 压缩布局，定高的表格被 GPU 勾选框和提示文字盖住最后两行（150% 缩放真机截图复现）。
+        lay.setSizeConstraint(QtWidgets.QLayout.SetMinimumSize)
 
         intro = QtWidgets.QLabel(
             "首次使用需要下载模型。下面勾选的会在点「开始下载」后自动下载，进度在主窗口里显示。<br>"
@@ -72,7 +98,8 @@ class FirstRunDialog(QtWidgets.QDialog):
         lay.addLayout(row)
 
         self._keys = list(MODEL_MANIFEST)
-        self.table = QtWidgets.QTableWidget(len(self._keys), 5)
+        self.table = _FitTable(len(self._keys), 5)
+        self.table.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
         self.table.setHorizontalHeaderLabels(["下载", "模型", "用途", "大小", "状态"])
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -100,10 +127,10 @@ class FirstRunDialog(QtWidgets.QDialog):
             self.table.setItem(r, _COL_STATUS, st_item)
             self._status_items[key] = st_item
         self.table.itemChanged.connect(lambda *_: self._update_summary())
-        # 表高按实际行高算死，6 行全露出来：给 stretch 时表下面留一大块空白；改用
-        # AdjustToContents + 关滚动条时，真机（Windows、125% 缩放）截图只显示了 4 行，
-        # 第 5、6 行（含默认勾选的 LaMa）被藏掉——所以在 showEvent / 扫描完后按行高重算。
-        self.table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        # 表的尺寸由 _FitTable.sizeHint 决定（全部 6 行 + 全部列宽），不留空白、不藏行
+        self.table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.table.resizeRowsToContents()
         lay.addWidget(self.table)
 
         # GPU 组件：只在有 N 卡驱动且还没装时出现。装在程序目录（不是模型目录），写清楚。
@@ -115,9 +142,12 @@ class FirstRunDialog(QtWidgets.QDialog):
             self.gpu_chk.setChecked(True)
             self.gpu_chk.toggled.connect(lambda *_: self._update_summary())
             lay.addWidget(self.gpu_chk)
+            # 完整路径放进提示框：路径可能很长，直接写进正文会折成好几行
             gpu_note = QtWidgets.QLabel(
-                f"检测到 NVIDIA 显卡。装在程序目录 {gc.components_root()}；不需要另装 CUDA，"
-                "装完重启程序生效。不装也能用，但全部走 CPU，翻译会非常慢。")
+                "检测到 NVIDIA 显卡。装在程序文件夹下的 components 里（鼠标停在这里看完整路径）；"
+                "不需要另装 CUDA，装完重启程序生效。不装也能用，但全部走 CPU，翻译会非常慢。")
+            gpu_note.setToolTip(str(gc.components_root()))
+            self.gpu_chk.setToolTip(str(gc.components_root()))
             gpu_note.setWordWrap(True)
             gpu_note.setStyleSheet("color: gray;")
             lay.addWidget(gpu_note)
@@ -143,10 +173,10 @@ class FirstRunDialog(QtWidgets.QDialog):
         lay.addLayout(btn_row)
 
     def _fit_table_height(self):
+        """状态文字变了（列宽/行高跟着变）之后让布局重新问一次 _FitTable.sizeHint。"""
+        # 不调 resizeColumnsToContents：它会把"状态"那列的 Stretch 宽度也改掉，表格右边留一条空白
         self.table.resizeRowsToContents()
-        h = (self.table.horizontalHeader().height() + self.table.verticalHeader().length()
-             + 2 * self.table.frameWidth() + 2)
-        self.table.setFixedHeight(h)
+        self.table.updateGeometry()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -216,19 +246,20 @@ class FirstRunDialog(QtWidgets.QDialog):
         keys = self.selected_model_keys()
         gpu = self._gpu_selected()
         ready = sum(1 for s in self._statuses.values() if s.is_ready)
-        model_dir = self.dir_edit.text().strip() or "（默认 HF 缓存）"
         lines = [f"已找到 {ready}/{len(self._statuses)} 个模型。"]
         model_bytes = frp.total_bytes(keys)
         if keys:
             names = "、".join(MODEL_MANIFEST[k].label for k in keys)
-            lines.append(f"将下载模型：{names}，共约 {frp.human_size(model_bytes)} → 存到 {model_dir}")
+            lines.append(f"将下载模型：{names}，共约 {frp.human_size(model_bytes)} → 存到上面的「模型保存到」目录")
         if gpu:
-            lines.append(f"将下载 GPU 组件：约 {frp.human_size(gc.total_download_bytes())} → 装到 {gc.components_root()}")
+            lines.append(f"将下载 GPU 组件：约 {frp.human_size(gc.total_download_bytes())} → 装到程序文件夹下的 components")
         if keys or gpu:
             lines.append(f"合计下载约 {frp.human_size(model_bytes + (gc.total_download_bytes() if gpu else 0))}。")
         else:
             lines.append("没有勾选要下载的东西。缺的模型以后可以在「模型管理」页下载。")
         self.summary_lbl.setText("<br>".join(lines))
+        self.summary_lbl.setToolTip(
+            f"模型目录：{self.dir_edit.text().strip() or '（默认 HF 缓存）'}\nGPU 组件：{gc.components_root()}")
         self.start_btn.setText("开始下载" if (keys or gpu) else "开始使用")
 
         # 磁盘空间：按盘汇总（模型目录和程序目录可能在不同盘，也可能同一块盘要两份加起来）
