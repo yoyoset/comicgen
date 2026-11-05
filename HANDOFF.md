@@ -26,7 +26,7 @@ manga-ocr / EasyOCR → 本地 GGUF 翻译（Sakura-14B 日译中 / 通用 Qwen3
 - **修了一个 CPU 环境下必现的 bug**：LaMa 在 CPU 版 torch 上加载失败，整页抹字失败（见 §5 坑 1）。
 - 仓库 `yoyoset/comicgen`：**已是 public**。交接给我时说是 private，但 2026-11-05 13:5x 推送前用 `gh repo view` 查到已经是
   PUBLIC（不是这一轮改的，events 里查不到何时切换）。全历史扫描结果和一处待用户决定是否清理的路径见 §6。
-- **GitHub Release v0.4.0 已发**：https://github.com/yoyoset/comicgen/releases/tag/v0.4.0（tag 指向 cb933a4）。
+- **GitHub Release v0.4.0 已发**：https://github.com/yoyoset/comicgen/releases/tag/v0.4.0（tag 指向 c4718d3；历史改写前是 cb933a4）。
   资产 `comicgen-0.4.0-win64-cpu.zip` 376,973,179 B，sha256 `91439ffc9fdf26f9180a8bfc623ff60de9ee51607bd5d909474ad800415afa06`，
   外加 `.sha256` 文件。未登录 curl 下回来 21 s、`sha256sum -c` OK、解压后 `--self-check` 与 mock 翻译跑通。
 - squareuncle.com 下载页**还没上架**（属于 SUBLOG 仓库那边的会话，不在本项目改）。
@@ -148,7 +148,7 @@ export PYTHONIOENCODING=utf-8
 1. **CPU 包翻译整页失败，交付物是原图**：`Could not run 'aten::empty_strided' with arguments from the 'CUDA' backend`，
    `--device cpu` 也一样 → simple_lama 的 `SimpleLama.__init__` 用 `torch.jit.load(path)` 不带 `map_location`，
    big-lama.pt 的张量存在 CUDA 上；它也不做"没 CUDA 就退回 CPU" → `Inpainter` 自己 `resolve_device` +
-   `torch.jit.load(path, map_location=dev)`（commit 181c319）。以前只发 CUDA 整包，这条路径从没跑到过。
+   `torch.jit.load(path, map_location=dev)`（commit 7420271）。以前只发 CUDA 整包，这条路径从没跑到过。
    **教训：发 CPU 包就要在 CPU 环境真跑一次完整流程，不能只跑 self-check。**
 2. **我最初估的解包大小 4.42 GB 是错的**，按过滤规则对真实 wheel 求和是 4.78 GB。数字一律实测后再写进代码。
 3. **git bash heredoc 里给 Python 写 Windows 路径，`\b` 变成了退格符**（`scripts\build_release.py` 写进 README 成了
@@ -161,17 +161,18 @@ export PYTHONIOENCODING=utf-8
 7. **EXE 从 shell 启动时 stdout 不是 None**，`comicgen.log` 不会生成，输出直接到管道；只有双击（无控制台）时才写 log。
 8. **pip 装的 torch 不认系统 CUDA**：它自带 CUDA 库。"让用户自己装 CUDA"不能减小安装包，这是整个方案的出发点。
 9. **Release 上的 `.sha256` 用 `sha256sum -c` 校验失败**（`'...zip'$'\r': No such file`）→ `Path.write_text` 在 Windows 写成 CRLF
-   → 改 `write_bytes`（commit b90fac4），资产已 `--clobber` 重传。**重传后立刻下载拿到的还是旧文件**（CDN 缓存），
+   → 改 `write_bytes`（commit 99dc870），资产已 `--clobber` 重传。**重传后立刻下载拿到的还是旧文件**（CDN 缓存），
    隔一会儿或带个查询参数再下才是新的；判断以 `gh release view --json assets` 的 `digest`/`size` 为准。
 10. **`gh release create --target` 要完整 40 位提交哈希**，短哈希报 `Release.target_commitish is invalid`（HTTP 422）。
 
 ## 6. 已知但还没处理的问题
 
-- **待用户决定要不要事后清理**（仓库已经公开，见 §1）：全历史扫描（`git log --all -p`，99 个提交）无密钥/令牌、无私人图片、无大文件（最大 blob 2.9 MB）；
-  邮箱 `yoysoet@gmail.com`/`yoyoset@gmail.com` 与公开的 subgen 相同。**但**历史和当前文件里有一个商业杂志的本地目录名
-  `E:\某漫画杂志\...`（`scripts/compare_sakura_prompts.py` 的 `PAGES` 常量、
-  `docs/AGENT_BRIEF.md` 写明"493 张 JPEG 原图"）。只有路径字符串，没有图像或对白。是否改写历史由用户决定，**不要自作主张 rewrite**。
-  扫描记录也存了一份在 session 共享笔记 `comicgen-history-scan.md`。
+- **（已处理）历史里的商业杂志路径**：全历史扫描（`git log --all -p`）无密钥/令牌、无私人图片、无大文件（最大 blob 2.9 MB）；
+  邮箱与公开的 subgen 相同。唯一问题是一个商业漫画杂志的本地目录名（在 `scripts/compare_sakura_prompts.py`、`docs/AGENT_BRIEF.md`
+  和本文件里），会暴露"手上有某期杂志的 493 页图"。2026-11-05 经用户同意，用 git-filter-repo `--replace-text` 把它在**全部历史**里
+  替换成"某漫画杂志"并强推 main 与 v0.4.0 tag（所有提交哈希都变了；改写前的完整备份是
+  `F:\my_ai\comicgen-before-rewrite-20261105.bundle`，**里面仍含原路径，不要上传**）。
+  残留风险：GitHub 可能仍能按旧提交哈希打开旧提交（缓存/悬空对象），要彻底清除得找 GitHub Support 申请 GC。
 - **真实窗口里点「组件」页没有人工验收过**（computer-use 被拒）。已验的是：离屏 MainWindow 点下载/取消/重试/完成；
   冻结 EXE 调同一个 `install()` 真实联网下载。建议用户第一次用时亲手点一遍。
 - **纯 CPU 跑 Sakura-14B 翻译没测过耗时**（预计极慢）；CPU 包只用 mock 翻译跑通了检测/OCR/抹字/渲染全流程。
@@ -196,3 +197,5 @@ export PYTHONIOENCODING=utf-8
 - 不要给 `verify` 加"哈希对不上也继续用"的降级路径。
 - 不要未经用户同意改写 git 历史、切换仓库可见性、推送 tag 到公开仓库之外的地方。
 - 不要按"官方 README"改 AGENTS.md「变更治理」里锁定的参数（repeat_penalty 等），先读那一节。
+- 不要把真实素材的本地路径（尤其是商业漫画/杂志的目录名、文件名）写进代码、文档或提交信息——仓库是公开的，
+  2026-11-05 为此改写过一次全部历史。脚本里要用素材路径就走命令行参数或环境变量。
