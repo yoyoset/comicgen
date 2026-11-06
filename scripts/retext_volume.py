@@ -55,6 +55,12 @@ def main(argv: list[str]) -> int:
 
     src_path = series_dir / f"{stem} [300dpi 简].cbz"
     text_path = series_dir / f"{stem}.text.jsonl"
+    if fix_path is None:
+        # 规则-only 模式（传 "-"）：如果这一卷旁边存着 <卷名>.fix.json，就一并套用。
+        # 否则会用 .text.jsonl 里的原始 OCR 文本重排「被规则改动到的页」——那会把
+        # 这些页上的人工修正悄悄覆盖掉（实测踩过：2026-11-06 死神第10卷 p146）。
+        sibling = series_dir / f"{stem}.fix.json"
+        fix_path = sibling if sibling.exists() else None
     fix = json.loads(fix_path.read_text(encoding="utf-8")) if fix_path else {}
     if not src_path.exists() or not text_path.exists():
         print(f"缺少输入：{src_path} / {text_path}")
