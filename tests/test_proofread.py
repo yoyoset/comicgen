@@ -31,6 +31,13 @@ def test_sentence_final_question_particle():
     assert apply_confusions("你愿意离开这里妈？") == "你愿意离开这里吗？"
 
 
+def test_ma_before_question_mark_is_particle():
+    # 分区下标偏移时「是马？」会单独成一个气泡，句首没有前字也要吃掉
+    assert apply_confusions("是马？") == "是吗？"
+    assert apply_confusions("马？") == "吗？"
+    assert apply_confusions("马上就去") == "马上就去"  # 「马上」不动
+
+
 def test_leading_wei_is_kept_as_interjection():
     # 句首的「喂」是真在喊人，不能当语气词改成「吗」
     assert apply_confusions("喂…喂…！") == "喂…喂…！"
