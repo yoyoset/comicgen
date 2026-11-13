@@ -10,6 +10,8 @@ Drop in a manga folder / ZIP / CBZ / EPUB / PDF. It runs **text detection → OC
 
 > **Windows build**: [Releases](https://github.com/yoyoset/comicgen/releases) has `comicgen-<version>-win64-cpu.zip` (about 0.38 GB, CPU runtime only, no models). Unzip, run `comicgen\comicgen-ui.exe`. With an NVIDIA card, open the **组件 (Components)** tab and install the GPU components (about 3.1 GB download, 4.8 GB on disk): official PyTorch cu124 and llama-cpp-python cu124 builds, SHA256-checked, resumable. No separate CUDA install is needed, only a recent NVIDIA driver.
 >
+> **Too lazy to pick the model files yourself?** Paste this to your AI assistant (it needs internet access and permission to run commands on your PC): "I'm using the comicgen Windows package, so no Python environment is needed. Follow section 2 of https://raw.githubusercontent.com/yoyoset/comicgen/main/SETUP_FOR_AI.md, download only detect, ocr_ja, sakura and lama into D:\models (change the folder if you like), use resumable downloads, check every sha256, and only when all match tell me the model folder so I can point the first-run wizard at it." (The linked file is in Chinese; the URLs, sizes and sha256 values in it are exact.)
+>
 > **From source**: what to download, where to put it and how to verify it is in [SETUP_FOR_AI.md](SETUP_FOR_AI.md) (written for your AI coding assistant; the file is in Chinese but the commands, URLs, sizes and sha256 values are exact).
 
 **One-line install:** clone the repo, then give your AI assistant (Claude Code, Codex, ...) `SETUP_FOR_AI.md` with this prompt:

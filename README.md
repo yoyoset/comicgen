@@ -25,6 +25,10 @@
    解压到任意**有空间的**目录（GPU 组件装完后整个目录约 5.6GB），双击 `comicgen\comicgen-ui.exe`。
 2. **首次运行会弹出向导**，确认模型存放目录——如果你已经用别的工具（或本机的 subgen 项目）下载过 Sakura/Qwen 之类的
    模型，把目录指向那个位置即可直接复用；弹窗会列出哪些模型已经就位、还差多少。缺的模型去「模型管理」页下载。
+
+   > **懒得自己点？把这段话贴给你的 AI 助手**（它要能联网下载、能在你电脑上执行命令）：
+   >
+   > 我用的是 comicgen 的 Windows 安装包，不用装 Python 环境。请按 https://raw.githubusercontent.com/yoyoset/comicgen/main/SETUP_FOR_AI.md 第 2 节，只下载 detect、ocr_ja、sakura、lama 四项到 D:\models（目录可改），大文件用断点续传，逐个核对 sha256，全部对上再告诉我模型目录路径，我在首次运行向导里指向它。
 3. **有 NVIDIA 显卡**：到「组件」页点「下载并安装 GPU 组件」（约 3.1GB 下载，安装后约 4.8GB），装完点「重启程序以启用」。
    **不用另外装 CUDA**——组件自带 CUDA 12.4 运行库（PyTorch / llama.cpp 官方构建），只需要较新的 NVIDIA 驱动。
    下载有进度、可取消、断网后再点会从断点继续，每个文件都核对 SHA256；官方源连不上会自动换国内镜像。
