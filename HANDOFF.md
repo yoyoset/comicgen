@@ -29,7 +29,7 @@
 
 审计工具在 `scripts/`（`audit_diff` / `make_region_sheet` / `apply_review` / `check_coverage` /
 `retext_volume` / `restore_pages` / `mark_progress` / `audit_status` / `detect_extra` / `dump_final`），
-流程文档在 `docs/AUDIT_WORKFLOW.md`。**这些脚本还没提交进 git**，接手时先确认工作区状态。
+流程文档在 `docs/AUDIT_WORKFLOW.md`。**已于 2026-11-24 完成路径脱敏并随 `v0.5.0` 提交入库**（提交 `6870a73`）。
 
 已知遗留：`_文档\_remaining_issues\` 里两份清单（中文句夹假名 868 格、气泡可能超框 201 格）；
 `retext_volume.guess_direction` 的横竖判据对单列竖排会给反答案（改成"窄高=竖排"会让宽气泡整页
@@ -49,7 +49,9 @@ manga-ocr / EasyOCR → 本地 GGUF 翻译（Sakura-14B 日译中 / 通用 Qwen3
 - **OCR / 校对与 CLI**：EasyOCR 行尾冒号/分号转句点、行内非数字旁转逗号；新增 `--glossary` 专有名词译名表、`--pdf-dpi` / `--min-font-size` / `--max-font-size`；`proofread.render_text()` 跳过扫描单字表并新增 OCR 幻觉串过滤，`zhconv` 改为可选导入。
 - **0.4.x 既有基础**：安装包只带 CPU 运行框架（zip 0.38 GB，解压 1.12 GB），GPU 部分由程序「组件」页首次运行下载（上游官方 wheel，3.07 GB 下载，解包 4.78 GB）；首次运行弹窗「开始下载」与长路径布局修复均已合入。
 - 仓库 `yoyoset/comicgen`：**已是 public**。全历史扫描结果见 §6（唯一一处问题路径已按用户要求从全部历史清除）。
-- **GitHub Release v0.5.0**：发布后补全实际 zip 字节数、SHA256 与冒烟验收；`releases/latest` 将指向 `v0.5.0`（下载页按钮用 `releases/latest`）。
+- **GitHub Release v0.5.0 是当前版本**：https://github.com/yoyoset/comicgen/releases/tag/v0.5.0
+  资产 `comicgen-0.5.0-win64-cpu.zip` 376,995,397 B，sha256 `62e3374c33d9c6e422bd41702e1241c55faf5812ae1fc2a4c8f3d8247066f247`，
+  外加 `.sha256` 文件（95 B，LF，`sha256sum -c` 通过）。本地解压跑通 `--self-check`（未装 GPU 组件退出码 1，`torch 2.6.0+cpu`、`gpu_offload=False`）与 `--cli tests\sample.zip --translator mock --source-lang ja --device cpu`（退出码 0，产出 `out.zip`）；`releases/latest/download/comicgen-0.5.0-win64-cpu.zip` 线上返回 HTTP 200（下载页按钮用 `releases/latest`）。
 - 旧版保留不删，标题和说明里标了"已被取代"：
   - v0.4.2：zip 376,984,486 B，sha256 `b38a0018bb52d2dfb685409250679dfd326c0cc74a19dfd6b40b8ecfba224a4c`（修长路径布局重叠）
   - v0.4.1：zip 376,982,899 B，sha256 `2c111899d336cb48ea24f2934cc48c44ca4fad53b6160f1ba33081c9eb744393`（长路径下弹窗布局重叠）
