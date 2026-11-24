@@ -12,7 +12,6 @@ from comic_gen.pipeline.render import (
     _line_advance,
     _load_font,
     _pick_size,
-    _stroke_for,
     render_page,
 )
 
@@ -34,14 +33,31 @@ def test_line_advance_fallback_without_getmetrics():
     assert _line_advance(FakeFont()) == 20 * 1.35
 
 
-def test_stroke_width_scales_with_size():
+def test_stroke_width_scales_with_size(monkeypatch):
+    """描边宽度的字号缩放逻辑（**旧模式**，仅在 FORCE_BLACK_TEXT 关闭时生效）。
+
+    2026-11-06 起交付标准改为纯黑实心字，默认不再描边，所以这里显式关掉开关
+    来覆盖缩放逻辑本身；默认模式下的行为由下面那条用例守住。
+    """
+    from comic_gen.pipeline import render
+
+    monkeypatch.setattr(render, "FORCE_BLACK_TEXT", False)
     light = (255, 255, 255)
     dark = (0, 0, 0)
-    assert _stroke_for(dark, 40) == ((0, 0, 0), 0)  # 深色不描边
-    _, sw_small = _stroke_for(light, 10)
-    _, sw_large = _stroke_for(light, 48)
+    assert render._stroke_for(dark, 40) == ((0, 0, 0), 0)  # 深色不描边
+    _, sw_small = render._stroke_for(light, 10)
+    _, sw_large = render._stroke_for(light, 48)
     assert sw_small >= 1
     assert sw_large > sw_small  # 随字号变大
+
+
+def test_default_mode_never_strokes():
+    """交付标准：默认一律纯黑实心，浅色也**不加描边**（描边=中空字观感）。"""
+    from comic_gen.pipeline import render
+
+    assert render.FORCE_BLACK_TEXT is True
+    assert render._stroke_for((255, 255, 255), 48) == ((0, 0, 0), 0)
+    assert render._stroke_for((0, 0, 0), 48) == ((0, 0, 0), 0)
 
 
 def test_pick_size_vertical_upper_bound_respects_box_width():

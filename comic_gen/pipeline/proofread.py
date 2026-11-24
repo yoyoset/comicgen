@@ -19,6 +19,11 @@ from __future__ import annotations
 
 import re
 
+try:
+    import zhconv
+except ImportError:  # pragma: no cover - 可选依赖，仅中文繁转简脚本使用
+    zhconv = None
+
 # ---------------------------------------------------------------- 单字表
 # 日文新字体 / 日文汉字写法 → 简体中文。manga-ocr 输出大量日文写法（実/戦/様/値/伝…），
 # zhconv 只处理中文繁简，不认这些。
@@ -115,6 +120,82 @@ def normalize_punctuation(text: str) -> str:
     for pattern, repl in _PUNCT_RULES:
         out = pattern.sub(repl, out)
     return out.strip("，")
+
+
+# 日文长音符 U+30FC / 半角 U+FF70：OCR 没清掉的残留，竖排下就是一根竖线，
+# 连用两个看起来跟「一一」一模一样（2026-11-16 用户实测反馈：以为页面上打了「一一」）。
+_DASH_RUN = re.compile(r"[ーｰ]+")
+_TOO_MANY_DASH = re.compile(r"—{3,}")
+
+
+def normalize_dashes(text: str) -> str:
+    """把日文长音符（ー / ｰ）改成中文破折号「——」。
+
+    只动 ー，不动全角连字符「－」——后者可能出现在数字/型号里（１２－０）。
+    """
+    if not text:
+        return text
+    out = _DASH_RUN.sub("——", text)
+    return _TOO_MANY_DASH.sub("——", out)
+
+
+def render_text(text: object) -> str:
+    """重排到页面前该做的文本处理：繁→简 + 长音符归一 + 垃圾串丢弃。
+
+    **刻意不调 apply_confusions**：上面那张单字表是给 OCR 原始输出纠错用的
+    （門→门 / 鬥→斗 这类扫描形近误认），作用在已经校对过的译文上会把正确字改坏。
+    2026-11-16 实测（死神 74 卷）：1826 格被改错——「为什么不敲门就打开啊」印成
+    「为什么不敲斗就打开啊」，「悠闲」变「你闲」，「死鱼眼」变「死鱼跟」。
+
+    空白返回 = 这一格不排字、保留原图（下游 `kept` 会跳过空串）。
+    """
+    if not text:
+        return ""
+    s = str(text)
+    raw = (zhconv.convert(s, "zh-cn") if zhconv is not None else s).strip()
+    if looks_like_ocr_noise(raw):
+        return ""
+    return normalize_dashes(raw)
+
+
+# ---------------------------------------------------------------- OCR 幻觉垃圾串
+# manga-ocr 面对装饰花纹、页脚小字、排名表、版权页会「幻觉」出成串的日期/法条，
+# 这些不是台词。它们一直躺在 .text.jsonl 里没进成品，只因为那些页从没被重排；
+# 一旦重排（哪怕是修别的错字）就会把整段乱码印到画面上。
+_NOISE_TOKENS = re.compile(
+    r"(?:[０-９0-9]{2,4}年|[０-９0-9]{1,2}月|[０-９0-9]{1,2}日|第[０-９0-9一二三四五六七八九十百]+[条回名项次])"
+)
+_FUNNEL = set("，。、;；:：（）()［］[]％%／/\\-—…“”\"'‘’・·~～!！?？　 ")
+_ELLIPSIS_RUN = re.compile(r"[…‥．.]{2,}")
+_JP_KANA = re.compile(r"[\u3040-\u30ff]")
+_HAN = re.compile(r"[\u4e00-\u9fff]")
+
+
+def looks_like_ocr_noise(text: str) -> bool:
+    """判断一格是不是 OCR 幻觉出来的垃圾串（不是台词）。
+
+    判据都留了余量，宁可漏判也不误杀台词：
+    - 短句（<12 字）一律不判；
+    - 先把「……」这类连续省略号压成一个字符再算比例，否则正常的「怎……怎么会这样……」
+      会因为标点占比高被误判（2026-11-16 实测这条踩过）。
+    """
+    t = (text or "").strip()
+    if len(t) < 12:
+        return False
+    t = _ELLIPSIS_RUN.sub("…", t)
+    n = len(t)
+    digits = sum(1 for c in t if c.isdigit() or "０" <= c <= "９")
+    kana = len(_JP_KANA.findall(t))
+    han = len(_HAN.findall(t))
+    punct = sum(1 for c in t if c in _FUNNEL)
+    tokens = len(_NOISE_TOKENS.findall(t))
+    if han == 0 and (digits + kana + punct) / n >= 0.3:
+        return True  # 一个汉字都没有，却排得满：日期/编号表之类
+    if n >= 20 and kana / n >= 0.3 and han / n <= 0.5:
+        return True  # 成段没翻译的日文（夹着几个汉字的也算）
+    if tokens >= 3 and han / n <= 0.5:
+        return True  # 成串的日期/条款编号
+    return False
 
 
 def apply_confusions(text: str) -> str:

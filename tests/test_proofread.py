@@ -5,9 +5,12 @@
 """
 from comic_gen.pipeline.proofread import (
     apply_confusions,
+    looks_like_ocr_noise,
+    normalize_dashes,
     normalize_punctuation,
     parse_numbered,
     proofread_lines,
+    render_text,
 )
 
 # ---------------------------------------------------------------- 字形表 / 位置规则
@@ -111,3 +114,55 @@ def test_proofread_falls_back_when_model_raises():
 
     fixed, _ = proofread_lines(["原样"], llm)
     assert fixed == ["原样"]
+
+
+# ---------------------------------------------------------------- 重排专用（2026-11-16）
+
+
+def test_render_text_never_applies_scan_confusions():
+    """重排到页面上的是校对后的译文，不能再过 OCR 单字表。
+
+    2026-11-16 实测（用户看死神成品发现）：门被印成斗、悠闲→你闲、死鱼眼→死鱼跟。
+    """
+    assert render_text("为什么不敲门就打开啊！") == "为什么不敲门就打开啊！"
+    assert render_text("是个悠闲的地方。") == "是个悠闲的地方。"
+    assert render_text("你这死鱼眼！") == "你这死鱼眼！"
+
+
+def test_render_text_converts_japanese_long_vowel_to_dash():
+    """ー 在竖排里就是一根竖线，连用两个看起来像「一一」（用户实测反馈）。"""
+    assert render_text("ーー应该是你！") == "——应该是你！"
+    assert render_text("滚开ー！") == "滚开——！"
+
+
+def test_normalize_dashes_keeps_existing_em_dash():
+    assert normalize_dashes("——我实在太没用了！") == "——我实在太没用了！"
+    assert normalize_dashes("－－") == "－－"  # 全角连字符可能出现在型号里，不动
+
+
+def test_normalize_dashes_handles_halfwidth_long_vowel():
+    assert normalize_dashes("ｰｰ等等") == "——等等"
+
+
+# ---------------------------------------------------------------- OCR 幻觉垃圾串（2026-11-16）
+
+
+def test_ocr_noise_detected():
+    """manga-ocr 在装饰花纹/页脚/排名表上幻觉出的日期与条款串。"""
+    assert looks_like_ocr_noise("２０１８年１２月２６日（土）第１２条第八第三条第二条第三项の“ホテル")
+    assert looks_like_ocr_noise("土曜日お父さんを选択する２月２５日のチームフレー体验の作者、月日")
+    assert looks_like_ocr_noise("１９３－１００６年１０月１８日【レート】ＣＡＲ")
+
+
+def test_dialogue_with_ellipsis_and_numbers_is_not_noise():
+    """真实的「……」多、数字多的台词不能被当成垃圾（用全库 12 万格验证过）。"""
+    assert not looks_like_ocr_noise("怎……怎么会这样……！我……我们完了……！")
+    assert not looks_like_ocr_noise("3年后的5月12日上午10点左右，南都的西南方9公里外的岛屿上会出现恐怖的二人组…")
+    assert not looks_like_ocr_noise("2…23000…真的只有23000…？")
+    assert not looks_like_ocr_noise("「１８５０００圆…０８０圆！」")
+    assert not looks_like_ocr_noise("藤真178！良田168！！")
+
+
+def test_render_text_drops_noise_but_keeps_dialogue():
+    assert render_text("２０１８年１２月２６日（土）第１２条第八第三条") == ""
+    assert render_text("为什么不敲门就打开啊！") == "为什么不敲门就打开啊！"

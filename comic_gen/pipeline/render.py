@@ -15,6 +15,11 @@ from ..infra.logging import logger
 _COL_GAP = 1.35
 _VERTICAL_ADV = 1.05
 
+# 竖排时必须旋转 90° 的字符：横排写法直接竖着排会跟汉字「一」混淆。
+# 「——」不旋转时就是两个横杠，读者会看成「一一」（2026-11-16 用户实测反馈）。
+# 只放破折号类：省略号「…」保持原样，免得把已交付页面的观感整体改掉。
+_VERTICAL_ROTATE = set("—―ーｰ–−－─")
+
 
 _FONT_FALLBACKS = (
     r"C:\Windows\Fonts\msyh.ttc",
@@ -175,11 +180,56 @@ def _fits(draw, text: str, font, bw: int, bh: int, direction: str, sw: int = 0) 
     return len(_wrap_horizontal(draw, text, font, eff_bw)) * _line_advance(font) <= eff_bh
 
 
+BLACK = (0, 0, 0)
+
+# 交付标准（2026-11-06 用户明确要求，**不要随便改回来**）：
+# 译文一律「纯黑实心字」——不沿用原字颜色（彩页、拟声字、副标题常是彩色，
+# 沿用后成品里会出现红字/蓝字与正文割裂），也不做描边。
+# 更关键的是「中空字」：原图里浅色字（白字、浅黄字）如果按取色结果去画，
+# 必须再加黑描边才看得见，出来就是一圈黑边、中间浅色的空心字效果；
+# 用户明确要求去掉。统一画纯黑实心，这两个问题一起消失。
+# 代价：原本靠颜色区分说话人的版面（极少）会失去区分，可接受。
+FORCE_BLACK_TEXT = True
+
+# 深色底上的字用纯白：仍然是纯色实心、不描边，只是保证看得见。
+DARK_BACKGROUND_LUM = 128
+LIGHT_TEXT = (255, 255, 255)
+
+
+def background_luminance(image: Image.Image, bbox) -> float:
+    """框内背景亮度的中位数（0 黑 – 255 白）。
+
+    用中位数而不是均值：气泡里常有网点/图案/残留笔画，均值会被极值带偏。
+    """
+    x, y, w, h = bbox
+    x, y = max(0, int(x)), max(0, int(y))
+    w, h = max(1, int(w)), max(1, int(h))
+    crop = image.crop((x, y, min(image.width, x + w), min(image.height, y + h))).convert("L")
+    hist = crop.histogram()
+    total = sum(hist)
+    if total <= 0:
+        return 255.0
+    acc = 0
+    for value, count in enumerate(hist):
+        acc += count
+        if acc * 2 >= total:
+            return float(value)
+    return 255.0
+
+
+def _text_color(image: Image.Image, bbox) -> tuple[int, int, int]:
+    """浅底黑字、深底白字——二选一，不引入彩色、不加描边。"""
+    return LIGHT_TEXT if background_luminance(image, bbox) < DARK_BACKGROUND_LUM else BLACK
+
+
 def _stroke_for(color, size: int) -> tuple[tuple, int]:
     """浅色文字（气泡外白字）配黑描边，宽度随字号缩放；深色文字不描边（气泡内描边会糊）。
 
     旧实现描边固定 1px，不随字号变化——小字描边显得过粗、大字描边显得过细。
+    `FORCE_BLACK_TEXT` 打开时一律不描边（黑字不需要描边，描了反而糊）。
     """
+    if FORCE_BLACK_TEXT:
+        return BLACK, 0
     if sum(color) >= 384:
         return (0, 0, 0), max(1, round(size * 0.06))
     return (0, 0, 0), 0
@@ -215,7 +265,14 @@ def render_page(image: Image.Image, regions: list[Region], cfg: Config) -> Image
         direction = r.direction if cfg.direction == "auto" else cfg.direction
         if direction not in (DIRECTION_VERTICAL, DIRECTION_HORIZONTAL):
             direction = DIRECTION_HORIZONTAL
-        color = tuple(r.color) if r.color else (0, 0, 0)
+        if FORCE_BLACK_TEXT:
+            # 「一律纯黑实心」是 2026-11-06 的交付标准（不沿用取色、不描边）。但它有个
+            # 必然的副作用：深色底（黑色气泡、夜景、黑底拟声）上黑字看不见——2026-11-17
+            # 用户报「大量黑底黑字」。折中：仍然只用纯黑/纯白两种颜色、仍不加描边，
+            # 按背景亮度二选一，保证对比度。
+            color = _text_color(image, (bx, by, bw, bh))
+        else:
+            color = (int(r.color[0]), int(r.color[1]), int(r.color[2])) if r.color and len(r.color) >= 3 else BLACK
         font, sw, fits = _pick_size(draw, text, bw, bh, direction, cfg, color)
         if not fits:
             logger.warning(
@@ -224,13 +281,13 @@ def render_page(image: Image.Image, regions: list[Region], cfg: Config) -> Image
             )
         stroke = (0, 0, 0)
         if direction == DIRECTION_VERTICAL:
-            _draw_vertical(draw, text, font, bx, by, bw, bh, color, stroke, sw)
+            _draw_vertical(out, draw, text, font, bx, by, bw, bh, color, stroke, sw)
         else:
-            _draw_horizontal(draw, text, font, bx, by, bw, bh, color, stroke, sw)
+            _draw_horizontal(out, draw, text, font, bx, by, bw, bh, color, stroke, sw)
     return out
 
 
-def _draw_horizontal(draw, text, font, bx, by, bw, bh, color, stroke, sw):
+def _draw_horizontal(image, draw, text, font, bx, by, bw, bh, color, stroke, sw):
     eff_bw = max(1, bw - 2 * sw)
     measure = lambda s: draw.textlength(s, font=font)
     lines = balance_lines(text, measure, eff_bw)
@@ -238,15 +295,21 @@ def _draw_horizontal(draw, text, font, bx, by, bw, bh, color, stroke, sw):
     lh = _line_advance(font)
     cy = by + max(0.0, (bh - lh * len(lines)) / 2)
     cx = bx + bw / 2
+    # 框窄到只能一字一行时，实际排版等同竖排：破折号要转 90°，否则「——」
+    # 就是两个横杠，读者会看成「一一」（2026-11-16 用户实测反馈）。
+    single_column = bool(lines) and max(len(l) for l in lines) <= 1
     for line in lines:
-        draw.text(
-            (cx, cy + lh / 2), line,
-            font=font, fill=color, stroke_width=sw, stroke_fill=stroke, anchor="mm",
-        )
+        if single_column and line in _VERTICAL_ROTATE:
+            _draw_rotated_char(image, line, cx, cy + lh / 2, font, color, stroke, sw)
+        else:
+            draw.text(
+                (cx, cy + lh / 2), line,
+                font=font, fill=color, stroke_width=sw, stroke_fill=stroke, anchor="mm",
+            )
         cy += lh
 
 
-def _draw_vertical(draw, text, font, bx, by, bw, bh, color, stroke, sw):
+def _draw_vertical(image: Image.Image, draw, text, font, bx, by, bw, bh, color, stroke, sw):
     chars = [c for c in text if c != "\n"]
     if not chars:
         return
@@ -261,8 +324,24 @@ def _draw_vertical(draw, text, font, bx, by, bw, bh, color, stroke, sw):
         cy = by + max(0.0, (bh - adv * len(col_chars)) / 2)
         cx = x_right - col * col_w
         for ch in col_chars:
-            draw.text(
-                (cx, cy + adv / 2), ch,
-                font=font, fill=color, stroke_width=sw, stroke_fill=stroke, anchor="mm",
-            )
+            if ch in _VERTICAL_ROTATE:
+                # 横排符号在竖排里必须转 90°：不转的话「——」就是两个横杠，
+                # 跟「一」一模一样（2026-11-16 用户实测：以为页面上印了「一一」）。
+                _draw_rotated_char(image, ch, cx, cy + adv / 2, font, color, stroke, sw)
+            else:
+                draw.text(
+                    (cx, cy + adv / 2), ch,
+                    font=font, fill=color, stroke_width=sw, stroke_fill=stroke, anchor="mm",
+                )
             cy += adv
+
+
+def _draw_rotated_char(image, ch: str, cx: float, cy: float, font, color, stroke, sw: int) -> None:
+    side = int(font.size * 1.5) + 2 * sw + 4
+    tile = Image.new("RGBA", (side, side * 2), (0, 0, 0, 0))
+    ImageDraw.Draw(tile).text(
+        (side / 2, side), ch, font=font, fill=color,
+        stroke_width=sw, stroke_fill=stroke, anchor="mm",
+    )
+    tile = tile.rotate(90, expand=True)
+    image.paste(tile, (int(cx - tile.width / 2), int(cy - tile.height / 2)), tile)
