@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -29,7 +30,7 @@ from PIL import Image
 TARGET_LONG_EDGE = 3030
 IMG_SUFFIX = (".jpg", ".jpeg", ".png", ".webp")
 FONT = r"C:\Windows\Fonts\msyh.ttc"
-SERIES_ROOT = Path(r"C:\Users\yoyos\Downloads\电子书\漫画")
+SERIES_ROOT = Path(os.environ.get("COMICGEN_DATA_ROOT", "."))
 OUT_ROOT = SERIES_ROOT / "_300dpi_简"
 WORK_ROOT = OUT_ROOT / "_work"
 LOG_PATH = OUT_ROOT / "batch.log"
