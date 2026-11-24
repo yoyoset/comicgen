@@ -46,7 +46,7 @@ The `llm` engine accepts any valid GGUF (point to it on the model management pag
 .\.venv\Scripts\python.exe -m comic_gen.ui.app
 ```
 
-Options: `--translator sakura|llm|mock`, `--source-lang ja|en|zh|other`, `--device cuda|cpu`. A batch queue, per-page review/editing and resume-after-interruption are available in the UI; see the Chinese README for details.
+Options: `--translator sakura|llm|mock`, `--source-lang ja|en|zh|other`, `--device cuda|cpu`, `--glossary <file>`, `--pdf-dpi <dpi>`, `--min-font-size <px>`, `--max-font-size <px>`, `--cleanup-intermediate`. A batch queue, per-page review/editing and resume-after-interruption are available in the UI; see the Chinese README for details.
 
 ## Licenses
 

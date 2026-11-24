@@ -12,35 +12,51 @@
 
 ---
 
+## 0. 最近的交接点（2026-11-17）
+
+**漫画校对流水线跑完了三个系列，成品已归档到 `<数据根目录>\漫画\`**（布局见 AGENTS.md
+「数据与产物位置」）：死神 74 卷、灌篮高手 24 卷、七龍珠 全彩版 15 卷，共 113 卷，
+每卷都过了"视觉逐页核对 → 覆盖率 100% → 重排 → 抽验"。海贼王 4 卷还是未审计的旧产物。
+
+这一轮（11-16~11-17）修了重排环节的三处系统性错误，都在 `comic_gen/pipeline/`：
+
+1. `proofread.render_text()` 不再调用 `apply_confusions`——那张"扫描形近误认"单字表
+   是给 OCR 原始输出纠错用的，套到已校对译文上会把 门→斗、技→找、眼→跟 等约 1100 格改坏。
+2. `normalize_dashes()` 把 OCR 残留的日文长音符 `ー` 归一成「——」；`render` 在竖排
+   （含"一字一行"的窄框）里把破折号旋转 90° 画成一根连续竖线，否则读者会看成「一一」。
+3. `looks_like_ocr_noise()` 把日期/法条成串、整格无汉字、成段假名的格子判为 OCR 幻觉，
+   重排时**不排字、保留原图**——否则全量重排会把几百格乱码印到画面上。
+
+审计工具在 `scripts/`（`audit_diff` / `make_region_sheet` / `apply_review` / `check_coverage` /
+`retext_volume` / `restore_pages` / `mark_progress` / `audit_status` / `detect_extra` / `dump_final`），
+流程文档在 `docs/AUDIT_WORKFLOW.md`。**这些脚本还没提交进 git**，接手时先确认工作区状态。
+
+已知遗留：`_文档\_remaining_issues\` 里两份清单（中文句夹假名 868 格、气泡可能超框 201 格）；
+`retext_volume.guess_direction` 的横竖判据对单列竖排会给反答案（改成"窄高=竖排"会让宽气泡整页
+溢出，试过已回退），彻底修需要重写竖排布局。海贼王 4 卷需要补审计。
+
+---
+
 ## 1. 项目是什么，现在什么状态
 
 漫画自动翻译桌面工具（PySide6，Windows）：文件夹/ZIP/CBZ/RAR/EPUB/PDF → RT-DETRv2 检测文字 →
 manga-ocr / EasyOCR → 本地 GGUF 翻译（Sakura-14B 日译中 / 通用 Qwen3-14B，llama.cpp）→ LaMa 抹字 →
 排版贴回 → 同格式输出。全部本地推理，无 API Key。只在 Python 3.13 上开发测试过。
 
-**版本 0.4.2（2026-11-05）**，这一轮做的事：
+**版本 0.5.0（2026-11-24）**，这一轮与近期积累的改动（含 11 月 10 个未发布提交 + 11-16~17 重排修复）：
 
-- **分发方式改了**：安装包只带 CPU 运行框架（zip 0.38 GB，解压 1.12 GB），GPU 部分由程序「组件」页
-  首次运行下载（上游官方 wheel，3.07 GB 下载，解包 4.78 GB）。之前的 CUDA 整包 5.9 GB，超过 GitHub Release
-  单文件 2 GB 上限，发不出去。
-- **修了一个 CPU 环境下必现的 bug**：LaMa 在 CPU 版 torch 上加载失败，整页抹字失败（见 §5 坑 1）。
-- **0.4.1：首次运行弹窗重做**（用户反馈"弹出来了但没有地方开始下载"）：一屏列出每个模型的勾选框 + 大小 + 状态、
-  「模型保存到 + 更改…」、GPU 组件勾选项（写明装在程序目录 `components\`）、逐行"下什么 → 存到哪"和合计，
-  主按钮「开始下载」；点了以后主窗口同时启动模型下载和 GPU 组件安装，模型页有进度条，页签标题带状态。见 §4 第 11 条。
-- **0.4.2：修这个弹窗的布局**：程序目录/模型目录路径很长时，GPU 勾选框盖住表格最后两行（见 §5 坑 15）。
-  汇总和提示不再写完整路径（放进 tooltip）。
-- 仓库 `yoyoset/comicgen`：**已是 public**。交接给我时说是 private，但 2026-11-05 13:5x 推送前用 `gh repo view` 查到已经是
-  PUBLIC（不是这一轮改的，events 里查不到何时切换）。全历史扫描结果见 §6（唯一一处问题路径已按用户要求从全部历史清除）。
-- **GitHub Release v0.4.2 是当前版本**：https://github.com/yoyoset/comicgen/releases/tag/v0.4.2
-  资产 `comicgen-0.4.2-win64-cpu.zip` 376,984,486 B，sha256 `b38a0018bb52d2dfb685409250679dfd326c0cc74a19dfd6b40b8ecfba224a4c`，
-  外加 `.sha256` 文件（LF，`sha256sum -c` 可直接用）。未登录下回来 22 s，`sha256sum -c` OK，解压后 `--self-check` 跑通；
-  `releases/latest` 指向 v0.4.2（下载页按钮用 `releases/latest` 就不用每次改）。
-- 旧版都保留不删，标题和说明里标了"已被取代"：
+- **渲染与编码**：`.jpg`/`.jpeg` 成品页按后缀真实写入 JPEG（q90 + 4:4:4），解决体积约 3 倍及部分阅读器拒读问题；保持纯色实心无描边（`FORCE_BLACK_TEXT=True`），新增框内背景灰度中位数判断（`< 128` 自动切换纯白字，其余纯黑）；竖排与一字一行窄框破折号旋转 90°。
+- **OCR / 校对与 CLI**：EasyOCR 行尾冒号/分号转句点、行内非数字旁转逗号；新增 `--glossary` 专有名词译名表、`--pdf-dpi` / `--min-font-size` / `--max-font-size`；`proofread.render_text()` 跳过扫描单字表并新增 OCR 幻觉串过滤，`zhconv` 改为可选导入。
+- **0.4.x 既有基础**：安装包只带 CPU 运行框架（zip 0.38 GB，解压 1.12 GB），GPU 部分由程序「组件」页首次运行下载（上游官方 wheel，3.07 GB 下载，解包 4.78 GB）；首次运行弹窗「开始下载」与长路径布局修复均已合入。
+- 仓库 `yoyoset/comicgen`：**已是 public**。全历史扫描结果见 §6（唯一一处问题路径已按用户要求从全部历史清除）。
+- **GitHub Release v0.5.0**：发布后补全实际 zip 字节数、SHA256 与冒烟验收；`releases/latest` 将指向 `v0.5.0`（下载页按钮用 `releases/latest`）。
+- 旧版保留不删，标题和说明里标了"已被取代"：
+  - v0.4.2：zip 376,984,486 B，sha256 `b38a0018bb52d2dfb685409250679dfd326c0cc74a19dfd6b40b8ecfba224a4c`（修长路径布局重叠）
   - v0.4.1：zip 376,982,899 B，sha256 `2c111899d336cb48ea24f2934cc48c44ca4fad53b6160f1ba33081c9eb744393`（长路径下弹窗布局重叠）
   - v0.4.0（tag 指向 c4718d3）：zip 376,973,179 B，sha256 `91439ffc9fdf26f9180a8bfc623ff60de9ee51607bd5d909474ad800415afa06`（首次运行没有下载按钮）
-- squareuncle.com 下载页**还没上架**（属于 SUBLOG 仓库那边的会话，不在本项目改）。
+- squareuncle.com 下载页已于 11-13 上架 `comicgen`（`releases/latest`），发版后需回 SUBLOG 仓库更新版本文字。
 - 产品排期总表在 `F:\my_ai\SUBLOG\video\weekly\2026-11-博客与产品排期.md`（不在本仓库，不进 git）。
-  博客/下载页属于 SUBLOG 仓库，**不要在本项目会话里改 SUBLOG**。
+  博客/下载页属于 SUBLOG 仓库，**不要在本项目会话里改 SUBLOG**（需在 SUBLOG 自身工作流下同步）。
 
 ## 2. 环境：两个 venv，各管各的
 
@@ -52,8 +68,7 @@ manga-ocr / EasyOCR → 本地 GGUF 翻译（Sakura-14B 日译中 / 通用 Qwen3
 `.venv-cpu` 重建（git bash，约 5 分钟）：
 
 ```bash
-cd /f/my_ai/comic-gen
-PY=/c/Users/yoyos/AppData/Local/Microsoft/WindowsApps/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/python.exe
+PY=python  # 本机 Python 3.13 可执行文件路径
 "$PY" -m venv .venv-cpu
 V=.venv-cpu/Scripts/python.exe
 $V -m pip install --upgrade pip
@@ -70,11 +85,11 @@ $V -m pip install -e . --no-deps
 ## 3. 命令（全部实跑过）
 
 ```powershell
-# 测试（纯函数、无网络无 GPU；两个 venv 都应 431 passed，约 1–2 分钟）
+# 测试（纯函数、无网络无 GPU；2026-11-24 实测 .venv 499 passed，.venv-cpu 498 passed / 1 skipped（缺少可选依赖 zhconv），约 1–2 分钟）
 .\.venv\Scripts\python.exe -m pytest -q tests
 .\.venv-cpu\Scripts\python.exe -m pytest -q -p no:cacheprovider tests
 # 门禁
-.\.venv\Scripts\python.exe -m ruff check comic_gen tests scripts\build_release.py
+.\.venv\Scripts\python.exe -m ruff check comic_gen tests scripts
 .\.venv\Scripts\python.exe -m mypy comic_gen
 
 # 开发态跑 UI / CLI

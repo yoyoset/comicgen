@@ -88,6 +88,32 @@ dist/comicgen/   EXE 产物（不入库，但其中的 settings.json 是用户�
 docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 ```
 
+## 数据与产物位置（2026-11-17 整理）
+
+漫画成品**不在仓库里**，放在用户的数据根目录 `<数据根目录>\漫画\`（由环境变量 `COMICGEN_DATA_ROOT` / `COMICGEN_RAW_ROOT` 指定）：
+
+```
+<数据根目录>\漫画\
+├─ 死神\             成品 74 卷（.cbz）+ 该卷的 text.jsonl / review.json / fix.json / coverage.json / extra.json
+├─ 灌篮高手\         成品 24 卷 + 中间数据
+├─ 七龍珠 全彩版\    成品 15 卷 + 中间数据
+├─ 海贼王\           成品 4 卷 + 中间数据（⚠ 从未逐页审计，是 2026-11-07 批量流程的直接产物）
+├─ _原版\            原始卷（117 个 .cbz）——重排/返工的唯一来源，别删
+├─ _文档\            PROGRESS.md、AUDIT_DECISIONS.md、AUDIT_TRACKING.md、_remaining_issues\*.csv
+└─ README.md
+```
+
+> 中间数据**故意和成品放在同一目录**：`scripts/retext_volume.py` 要求 `text.jsonl` / `fix.json`
+> 与成品 cbz 同目录（早期把它们分开过一版，结果重排脚本全部找不到输入，已改回）。
+
+- 旧本地缓存目录里的成品与原始卷副本已清理，C 盘可用空间从 67.8 GB 回到 126.7 GB（释放约 59 GB）。
+- 重排（`scripts/retext_volume.py`）要读原始卷，用 `--raw-root "<原版根目录>\<系列>"`
+  （死神最初不在默认原版目录，就是靠这个参数找到的）；整批重排用 `scripts/retext_all.py`。
+- 体检脚本 `scripts/scan_text_issues.py` 输出四类问题清单到 `_文档\_remaining_issues\`
+  （2026-11-17 实测：OCR 噪声 314、假名残留 868、可能超框 68、重复退化 137）。
+
+
+
 ## 关键设计（改动前必读）
 
 1. **中间产物驱动**：每页所有阶段结果存 `<工作目录>/pages.json`，含 `input` 指纹（绝对路径），指纹不符则丢弃缓存。状态机：pending→detected→ocred→translated→rendered；`rerender=True` 会把 rendered 打回 translated 强制重渲染。**四个阶段全部逐页 try + 每页落盘**，单页失败不致整阶段丢失。另有 `<工作目录>/job.json`：本次任务的完整 `Config` 快照 + 各模型实际解析到的绝对路径 + 各阶段耗时，供事后诊断（`pages.json` 只记 `input` 一项，不够定位"当时用的是什么配置"）；`<工作目录>/run.log` 是叶子模块（`ocr.py`/`translate.py`/`render.py`）通过 `infra.logging` 记的带时间戳警告/提示，**每次 run 从干净开始（`mode="w"`）**——文件夹输入的工作目录在多次运行间复用，追加会让它在长期使用中无限增长。
@@ -232,6 +258,38 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
     对照表修不回来；`apply_glossary` 用相似度阈值 0.85 吃掉这类单字母增删。`Region.source_text`
     仍保留 OCR 原文（校对页看到的是识别结果）。改术语表后必须让翻译缓存失效才会生效——
     `runner._get_translator` 的签名里已经带上 `sorted(cfg.glossary.items())`。
+30. **中文版源书不要走日文 OCR**（2026-11-06 实测踩坑，会系统性出错）：七龙珠 17 卷
+    248 页里约 150 页有错字，「吧→咆」「了→聊」「怎么→凭么」「哪→娜」「掉→埠」
+    「才→オ」成片出现。根因不是翻译或后处理，是 **manga-ocr 是日文模型，面对繁体中文
+    页面只能给出最像的日文读法**，再交给翻译模型猜成中文，于是产出"看着像中文、其实是
+    OCR 幻觉"的字符串。中文版（台湾授权版）必须走「视觉模型直接读图 → zhconv 转简体 →
+    render」这条路径，日文 OCR 只用于真正的日文源书。
+    **标准流程见 `docs/AUDIT_WORKFLOW.md`（v3，任何接手者照做，不许跳步；§13 暂停与续跑、§14 任务清单与提示词快照保证停工/复工不丢状态）**，
+    视觉模型评测结论见 `docs/VISION_OCR_BENCHMARK.md`。v1 那套「制表 → 视觉转录 →
+    与旧 OCR diff → fix → retext」只是**草稿**，2026-11-07 起还必须做**逐页核对**和
+    **漏检气泡**：前者抓转录层漏字/多字/形近字/重复字丢字（「呵呵呵」只剩两个「呵」），
+    后者抓 `pages.json` 里根本没有的框（18 卷实测 6 页 7 个：0023「什麼？」、0030
+    「球——！」、0148「交換——！」、0154「那麼，」——成品里仍是繁体原字或空白气泡）。
+    这两类 `audit_diff` 一条都看不见，**只有逐页看图才会暴露**。
+    逐页核对用 `scripts/dump_final.py` 导出「入库文字」↔ 编号联系表逐格比，差异进
+    `<卷名>.review.json`，漏检气泡进 `<卷名>.extra.json`（bbox 坐标是**处理坐标
+    1020×1600**，成品页 1932×3030 是 ×1.894；**补框必须先裁图确认位置**，框错会抹掉
+    人物网点）；然后 `scripts/apply_review.py` 合并、`retext_volume.py` 整卷重排、
+    `restore_pages.py` 盖回非主体页。**单格看不清就标 `?`，不许猜**。
+    模型分工（实测）：deepseek 主跑报差异，muse 只在争议时做第二意见；**两个模型都认同
+    也可能错**（0023 多一个「太」两模型都没看出），所以人要看图裁决，否决记录进
+    `_rejected`，以后不许翻案。定时任务与并发锁规则见该文档 §6/§11。
+31. **成品译文一律纯色实心、不描边、不用取色**（2026-11-06 用户明确要求，`pipeline/render.py`
+    的 `FORCE_BLACK_TEXT = True`）：不沿用原字颜色、不描边。原因有两层——彩页/拟声字
+    的取色会让成品里冒出红字蓝字跟正文割裂；而浅色字按取色画出来必须加黑描边才看得见，
+    于是成了「一圈黑边、中间浅色」的中空字，用户明确要去掉。
+    **2026-11-17 补：深色底改白字**。只用纯黑的后果是黑气泡/夜景/黑底拟声上完全看不见
+    （用户实测「大量黑底黑字」）。现在 `_text_color()` 按框内背景亮度中位数二选一：
+    < 128 用纯白、否则纯黑——仍然只有黑白两色、仍然不描边，只是保证对比度。
+    `_stroke_for` 里保留旧的「浅色字按字号缩放描边」逻辑，但默认开关打开时直接返回 0；
+    测试 `test_default_mode_never_strokes` / `test_forced_black_text_ignores_region_color`
+    / `test_dark_background_gets_white_text` / `test_light_background_keeps_black_text`
+    守住这条，别为了「好看」偷偷把彩色或描边加回来。
 
 ## 变更治理：已验证锁定参数（动之前先读这里）
 
@@ -264,6 +322,7 @@ docs/            PROPOSAL.md(方案+决策) HANDOFF.md(阶段交接)
 | `BaseTranslator._MAX_CHUNK_LINES`/`_CHUNK_OUTPUT_TOKEN_BUDGET` 与 `_LlamaGGUFTranslator` 的 `n_ctx=4096` | `pipeline/translate.py` | 联动关系 | 改分块预算必须同步重估 n_ctx | 2026-08 分块改造 |
 | `REGION_QUALITY_MIN_SCORE` | `pipeline/detect.py` | `0.4`（保守起点，**未校准**） | 不是实测校准的合适阈值 | commit 4c0a52e 单样本统计 |
 | `OUTPUT_JPEG_QUALITY` | `core/utils.py` | `90`（**有测试**） | 成品页编码；改小会糊字、改大体积翻倍（q95 524 KB vs q90 426 KB） | 2026-11-05 单页实测（见 CHANGELOG 同日条目） |
+| `FORCE_BLACK_TEXT` | `pipeline/render.py` | `True`（**有测试**） | 译文纯黑实心、不描边；放开会重新出现彩色字与中空字 | 2026-11-06 用户明确要求（见条目 31） |
 | `glossary._FUZZY_MIN_RATIO` | `pipeline/glossary.py` | `0.85`（**有测试**） | 低了会误伤普通词（DAISUKI/SUZUKI 0.77），高了吃不掉 OCR 错拼（HANAMiCHiW/HANAMICHI 0.94） | 同上，真实 OCR 串 + 单测 |
 | 取色/竖排/描边/渲染字体兜底等 | `pipeline/inpaint.py`、`render.py` | 见上面对应编号条目 | 大多带"待校准"标注 | 各自条目 |
 

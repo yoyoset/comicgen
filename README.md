@@ -22,7 +22,7 @@
 ### 方式一：安装包（免装环境）
 
 1. 从 [Releases](https://github.com/yoyoset/comicgen/releases) 下载 `comicgen-<版本>-win64-cpu.zip`（约 0.38GB），
-   解压到任意**有空间的**目录（GPU 组件装完后整个目录约 5.6GB），双击 `comicgen\comicgen-ui.exe`。
+   解压到任意**有空间的**目录（GPU 组件装完后整个目录约 5.9GB），双击 `comicgen\comicgen-ui.exe`。
 2. **首次运行会弹出向导**，确认模型存放目录——如果你已经用别的工具（或本机的 subgen 项目）下载过 Sakura/Qwen 之类的
    模型，把目录指向那个位置即可直接复用；弹窗会列出哪些模型已经就位、还差多少。缺的模型去「模型管理」页下载。
 
@@ -114,7 +114,7 @@ EXE——校验只查文件头确认是 GGUF，不卡任何具体模型的字节
 .\.venv\Scripts\python.exe -m comic_gen.app.job_service <输入> -o <输出> --translator sakura
 ```
 
-参数：`--translator sakura|llm|mock`、`--source-lang ja|en|zh|other`、`--device cuda|cpu`。
+参数：`--translator sakura|llm|mock`、`--source-lang ja|en|zh|other`、`--device cuda|cpu`、`--glossary <译名表文件>`、`--pdf-dpi <DPI>`、`--min-font-size <PX>`、`--max-font-size <PX>`、`--cleanup-intermediate`。
 输出路径留空按默认规则推导（见下表）。
 
 ## 输出规则
